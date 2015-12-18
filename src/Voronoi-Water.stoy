@@ -1,0 +1,90 @@
+/*!
+ * <info>
+ * <author>clayjohn [ https://www.shadertoy.com/user/clayjohn ]</author>
+ * <name>Voronoi Water</name>
+ * 
+ * <description>
+ *   This started off as an experiment in multi octave voronoi cell-based noise.
+ *   it ended up as a very simple water shader.
+ * </description>
+ * 
+ * <url>https://www.shadertoy.com/view/4tXSDf</url>
+ * 
+ * <date>2015-08-21</date>
+ * 
+ * <tags>voronoi, water, worleynoise</tags>
+ * 
+ * <synthclipse-importer-legal-note>
+ *   As noted in: [ https://www.shadertoy.com/terms ]:
+ *   If the author did not stated otherwise, this shader is licensed under
+ *   Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License 
+ *   [ http://creativecommons.org/licenses/by-nc-sa/3.0/deed.en_US ].
+ * </synthclipse-importer-legal-note>
+ * </info>
+ */
+
+uniform vec3      iResolution;           // viewport resolution (in pixels)
+uniform float     iGlobalTime;           // shader playback time (in seconds)
+uniform float     iChannelTime[4];       // channel playback time (in seconds)
+uniform vec3      iChannelResolution[4]; // channel resolution (in pixels)
+uniform vec4      iMouse;                // mouse pixel coords. xy: current (if MLB down), zw: click
+uniform vec4      iDate;                 // (year, month, day, time in seconds)
+uniform float     iSampleRate;           // sound sample rate (i.e., 44100)
+
+
+vec2 hash2(vec2 p ) {
+   return fract(sin(vec2(dot(p, vec2(123.4, 748.6)), dot(p, vec2(547.3, 659.3))))*5232.85324);   
+}
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(43.232, 75.876)))*4526.3257);   
+}
+
+//Based off of iq's described here: http://www.iquilezles.org/www/articles/voronoilin
+float voronoi(vec2 p) {
+    vec2 n = floor(p);
+    vec2 f = fract(p);
+    float md = 5.0;
+    vec2 m = vec2(0.0);
+    for (int i = -1;i<=1;i++) {
+        for (int j = -1;j<=1;j++) {
+            vec2 g = vec2(i, j);
+            vec2 o = hash2(n+g);
+            o = 0.5+0.5*sin(iGlobalTime+5.038*o);
+            vec2 r = g + o - f;
+            float d = dot(r, r);
+            if (d<md) {
+              md = d;
+              m = n+g+o;
+            }
+        }
+    }
+    return md;
+}
+
+float ov(vec2 p) {
+    float v = 0.0;
+    float a = 0.4;
+    for (int i = 0;i<3;i++) {
+        v+= voronoi(p)*a;
+        p*=2.0;
+        a*=0.5;
+    }
+    return v;
+}
+
+void mainImage( out vec4 fragColor, in vec2 fragCoord )
+{
+	vec2 uv = fragCoord.xy / iResolution.xy;
+    vec4 a = vec4(0.2, 0.4, 1.0, 1.0);
+    vec4 b = vec4(0.85, 0.9, 1.0, 1.0);
+	fragColor = vec4(mix(a, b, smoothstep(0.0, 0.5, ov(uv*5.0))));
+    
+}
+
+void main() {
+	vec4 color;
+	mainImage(color, gl_FragCoord.xy);
+
+	color.w = 1.0;
+	gl_FragColor = color;
+}

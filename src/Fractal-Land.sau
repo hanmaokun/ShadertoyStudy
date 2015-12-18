@@ -1,0 +1,47 @@
+/*!
+ * <info>
+ * <author>Kali [ https://www.shadertoy.com/user/Kali ]</author>
+ * <name>Fractal Land</name>
+ * 
+ * <description>
+ *   <img src="/img/emoticonLaugh.png"/>
+ * </description>
+ * 
+ * <url>https://www.shadertoy.com/view/XsBXWt</url>
+ * 
+ * <date>2013-11-07</date>
+ * 
+ * <tags>fractal, cartoon</tags>
+ * 
+ * <synthclipse-importer-legal-note>
+ *   As noted in: [ https://www.shadertoy.com/terms ]:
+ *   If the author did not stated otherwise, this shader is licensed under
+ *   Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License 
+ *   [ http://creativecommons.org/licenses/by-nc-sa/3.0/deed.en_US ].
+ * </synthclipse-importer-legal-note>
+ * </info>
+ */
+
+uniform float     iBlockOffset;
+uniform float     iChannelTime[4];       // channel playback time (in seconds)
+uniform vec3      iChannelResolution[4]; // channel resolution (in pixels)
+uniform vec4      iDate;                 // (year, month, day, time in seconds)
+uniform float     iSampleRate;           // sound sample rate (i.e., 44100)
+
+
+vec2 mainSound(float time)
+{
+    time=mod(time-5.,12.);
+	return vec2( fract(sin(6.2831*440.0*time)*100.)*exp(-1.0*time))*min(1.,time);
+}
+
+void main() {
+	float t = iBlockOffset + (gl_FragCoord.x + gl_FragCoord.y * 512.0) / 44100.0;
+
+	vec2 y = mainSound(t);
+
+	vec2 v = floor((0.5 + 0.5 * y) * 65536.0);
+	vec2 vl = mod(v, 256.0) / 255.0;
+	vec2 vh = floor(v / 256.0) / 255.0;
+	gl_FragColor = vec4(vl.x, vh.x, vl.y, vh.y);
+}

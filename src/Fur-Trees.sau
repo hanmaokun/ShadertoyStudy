@@ -1,0 +1,96 @@
+/*!
+ * <info>
+ * <author>eiffie [ https://www.shadertoy.com/user/eiffie ]</author>
+ * <name>Fur Trees</name>
+ * 
+ * <description>
+ *   I started a stand of fake trees for people who like to cut their own without
+ *   dealing with the messy sap. Unless that's your thing... then the sap is extra.
+ * </description>
+ * 
+ * <url>https://www.shadertoy.com/view/lts3zr</url>
+ * 
+ * <date>2014-12-11</date>
+ * 
+ * <tags>fur, de, defur</tags>
+ * 
+ * <synthclipse-importer-legal-note>
+ *   As noted in: [ https://www.shadertoy.com/terms ]:
+ *   If the author did not stated otherwise, this shader is licensed under
+ *   Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License 
+ *   [ http://creativecommons.org/licenses/by-nc-sa/3.0/deed.en_US ].
+ * </synthclipse-importer-legal-note>
+ * </info>
+ */
+
+uniform float     iBlockOffset;
+uniform float     iChannelTime[4];       // channel playback time (in seconds)
+uniform vec3      iChannelResolution[4]; // channel resolution (in pixels)
+uniform vec4      iDate;                 // (year, month, day, time in seconds)
+uniform float     iSampleRate;           // sound sample rate (i.e., 44100)
+
+
+//fractal music?? by eiffie
+#define bps 8.0
+
+// note number to frequency  from https://www.shadertoy.com/view/ldfSW2
+float ntof(float n){return 440.0 * pow(2.0, (n - 67.0) / 12.0);}
+
+float nofs(float n){//the song's "random" ring
+    n=mod(n,8.0);
+    if(n<1.0)return 0.0;
+    if(n<2.0)return 2.0;
+    if(n<3.0)return -1.0;
+    if(n<4.0)return 5.0;
+    if(n<5.0)return 7.0;
+    if(n<6.0)return -3.0;
+    if(n<7.0)return 4.0;
+    return -1.0;
+}
+float scale(float note){//throws out dissonant tones
+    float n2=mod(note,12.0);
+    if((n2==1.0)||(n2==3.0)||(n2==6.0)||(n2==8.0)||(n2==10.0))note=-100.0;
+    return note;
+}
+float saw(float t){return abs(fract(t)-0.5)-0.25;}
+float rand(float t){return fract(sin(t*341.545234)*1531.2341);}
+
+#define TAO 6.2831
+vec2 mainSound(float time)
+{
+    float tim=time*bps;
+    float b=floor(tim);
+    float t=fract(tim);
+    float t1=mod(tim,2.0)*0.5;
+    float t2=mod(tim,4.0)*0.25;
+    float t3=mod(tim,8.0)*0.125;
+    float t4=mod(tim,16.0)*0.0625;
+    float n0=0.0,n1=0.0,n2=0.0,n3=0.0,n4=0.0;
+    
+  	n4=nofs(b*0.0625);
+    n3=n4+nofs(b*0.125);
+    n2=n3+nofs(b*0.25);
+    n1=n2+nofs(b*0.5);
+    n0+=n1+nofs(b);//fractal buildup of notes like a landscape
+    
+    if(mod(b,8.0)<1.0){b=rand(time)-0.5;b*=t*0.2;}
+    else b=0.0;
+    
+    float f0=ntof(scale(n0+72.0))*time;
+    float f1=ntof(scale(n1+60.0))*time;
+    float f1h=ntof(scale(n1+65.0))*time*1.01;
+    float f2=ntof(scale(n2+48.0))*time;
+    float f2h=ntof(scale(n2+55.0))*time*0.99;
+    return vec2( b+saw(f0)*exp(-2.0*t)+(saw(f1)+saw(f1h))*exp(-2.0*t1)+(saw(f2)+saw(f2h))*exp(-2.0*t2) );
+}
+
+void main() {
+	float t = iBlockOffset + (gl_FragCoord.x + gl_FragCoord.y * 512.0) / 44100.0;
+
+	vec2 y = mainSound(t);
+
+	vec2 v = floor((0.5 + 0.5 * y) * 65536.0);
+	vec2 vl = mod(v, 256.0) / 255.0;
+	vec2 vh = floor(v / 256.0) / 255.0;
+	gl_FragColor = vec4(vl.x, vh.x, vl.y, vh.y);
+}

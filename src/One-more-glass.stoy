@@ -1,0 +1,441 @@
+/*!
+ * <info>
+ * <author>andregc [ https://www.shadertoy.com/user/andregc ]</author>
+ * <name>One more glass</name>
+ * 
+ * <description>
+ *   This shader calculates a full set of reflection and refraction rays recursively.
+ *   Use mouse to look around. Comment or set OBJECT_MAP_FUNCTION to see other objects
+ * </description>
+ * 
+ * <url>https://www.shadertoy.com/view/XljGWR</url>
+ * 
+ * <date>2015-04-04</date>
+ * 
+ * <tags>raymarching, reflection, refraction, glass</tags>
+ * 
+ * <synthclipse-importer-legal-note>
+ *   As noted in: [ https://www.shadertoy.com/terms ]:
+ *   If the author did not stated otherwise, this shader is licensed under
+ *   Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License 
+ *   [ http://creativecommons.org/licenses/by-nc-sa/3.0/deed.en_US ].
+ * </synthclipse-importer-legal-note>
+ * </info>
+ */
+
+uniform vec3      iResolution;           // viewport resolution (in pixels)
+uniform float     iGlobalTime;           // shader playback time (in seconds)
+uniform float     iChannelTime[4];       // channel playback time (in seconds)
+uniform vec3      iChannelResolution[4]; // channel resolution (in pixels)
+uniform vec4      iMouse;                // mouse pixel coords. xy: current (if MLB down), zw: click
+uniform vec4      iDate;                 // (year, month, day, time in seconds)
+uniform float     iSampleRate;           // sound sample rate (i.e., 44100)
+uniform sampler2D iChannel0; //! WARNING: Unsupported input type: "video". Source: "Shadertoy/res/vid02.ogv"
+
+// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.
+// Distance function, camera setup and base for raymarching from iq's // https://www.shadertoy.com/view/Xds3zN
+
+//comment it or set to map1..map4 to see other objects (it is a bit slower when uncommented)
+#define OBJECT_MAP_FUNCTION map1
+
+
+#define RECURSION
+#define RAY_COUNT 15 //valid if RECURSION IS OFF: total number of rays (refl+reft) = 2^n-1, where n number of contact surfaces
+#define calcRecursion rec4 //valid if RECURSION IS ON: use n rays levels: total  RAY_COUNT = 2^n-1
+#define DIST_EPSILON 0.005
+
+#define ID_SKY 3.
+#define ID_FLOOR 1.
+#define ID_GLASS_WALL 2.
+#define ETA 0.75
+#define M_PI				3.1415926535897932384626433832795
+
+#define DENSITY_MIN 0.1
+#define DENSITY_MAX 1.
+#define MATERIAL_COLOR vec3(0.5,0.8,1)*0.1
+#define AIR_COLOR vec3(0.5,0.8,1)*0.1
+
+#define SURFACE_COLOR vec3(0.8,1.,0.8)*1.6
+//#define SURFACE_COLOR vec3(0.8,1.,0.8)*(1.-0.2* mod( floor(5.0*p.z) + floor(5.1*p.x) + floor(5.1*p.y), 2.0))
+//#define SURFACE_COLOR vec3(0.8,1.,0.8)*(1.+0.6*noise(p.xz*30. + p.yy*23.));
+
+//-------------------------------------------------------------------------------
+
+float rand(vec2 n) { 
+	return fract(sin(dot(n, vec2(12.9898, 4.1414))) * 43758.5453);
+}
+
+float noise(vec2 n) {
+	const vec2 d = vec2(0.0, 1.0);
+	vec2 b = floor(n), f = smoothstep(vec2(0.0), vec2(1.0), fract(n));
+	return mix(mix(rand(b), rand(b + d.yx), f.x), mix(rand(b + d.xy), rand(b + d.yy), f.x), f.y);
+}
+
+struct CP {
+    float dist;
+    vec3 normal;
+    float mat;
+    vec3 p;
+};
+    
+    
+struct Ray {
+    vec3 rd;
+    CP cp;
+    vec3 col;
+    float share;
+    float eta;
+};
+    
+    
+//-------------------------------------------------------------------------------
+//  https://www.shadertoy.com/view/Xds3zN
+float sdBox( vec3 p, vec3 b )
+{
+   vec3 d = abs(p) - b;
+   return (min(max(d.x,max(d.y,d.z)),0.0) + length(max(d,0.0)));
+}
+
+float sdSphere( vec3 p, float r)
+{
+   return (length(p)-r);
+}
+
+float sdPlane( vec3 p )
+{
+	return p.y;
+}
+
+float sdCappedCylinder( vec3 p, vec2 h )
+{
+  vec2 d = abs(vec2(length(p.xz),p.y)) - h;
+  return min(max(d.x,d.y),0.0) + length(max(d,0.0));
+}
+
+float udRoundBox( vec3 p, vec3 b, float r )
+{
+  return abs(length(max(abs(p)-b,0.0))-r);
+}
+
+vec3 opU( vec3 d1, vec3 d2 )
+{
+	return (d1.x<d2.x) ? d1 : d2;
+}
+
+vec3 opS(  vec3 d1, vec3 d2 )
+{
+    return -d1.x>d2.x ? d2: d1;
+}
+
+//-------------------------------------------------------------------------------
+
+vec3 map3(in vec3 pos) {
+    
+    vec3 res =  vec3(sdBox(pos-vec3(0,0.29,0), vec3(0.5)),ID_GLASS_WALL, ETA);
+    res.x =abs(res.x);
+    res = opU(res, vec3(sdSphere(pos-vec3(0,0.8,0),0.4),ID_GLASS_WALL, ETA)); 
+    res.x =abs(res.x);
+	return res;
+}
+
+vec3 map4(in vec3 pos) {
+    
+    vec3 res =  vec3(sdBox(pos-vec3(0,0.29,0), vec3(0.5)),ID_GLASS_WALL, ETA);
+    res = opU(res, vec3(sdSphere(pos-vec3(0,0.8,0),0.4),ID_GLASS_WALL, ETA)); 
+    res.x =abs(res.x);
+	return res;
+}
+
+vec3 map2(in vec3 pos) {
+   vec3 res =  vec3((sdCappedCylinder(pos-vec3(0,0.4,0), vec2(0.8,0.5))), ID_GLASS_WALL, ETA);
+    res = opS(res, vec3(sdSphere(pos-vec3(0,0.8,0),0.4),ID_GLASS_WALL, ETA)); 
+    res.x =abs(res.x);
+ 	return res;
+}
+
+
+vec3 map1(in vec3 pos) {
+    vec3 res =  vec3(sdBox(pos-vec3(0,0.29,0), vec3(0.5)),ID_GLASS_WALL, ETA);
+    res = opS(res, vec3(sdSphere(pos-vec3(0,0.8,0),0.4),ID_GLASS_WALL, ETA)); 
+    res.x =abs(res.x);
+ 	return res;
+}
+
+vec3 map(in vec3 pos) {
+    vec3 plane = vec3(sdPlane(pos), ID_FLOOR, -1. );
+
+    vec3 res = plane;
+#ifdef OBJECT_MAP_FUNCTION    
+	res =opU(res, OBJECT_MAP_FUNCTION(pos));    
+#else
+    float t = mod(iGlobalTime*0.1, 4.);
+    if (t < 1.) {
+    	res = opU(res, map1(pos));
+    } else if (t<2.) {
+       	res = opU(res, map2(pos));
+    } else if (t<3.) {
+        res = opU(res, map3(pos));
+    } else if (t<4.) {
+        res = opU(res, map4(pos));
+    }
+#endif
+    return res;
+}
+
+//-------------------------------------------------------------------------------
+
+vec3 calcNormal( in vec3 pos )
+{
+	vec3 eps = vec3( 0.0001, 0.0, 0.0 );
+    float d = map(pos).x;
+    return normalize( vec3(
+	    map(pos+eps.xyy).x - d,
+	    map(pos+eps.yxy).x - d,
+	    map(pos+eps.yyx).x - d)
+	);
+
+}
+
+
+              
+CP findIntersection(vec3 p, vec3 rd) {
+     
+    float tmin = 0.000;
+    float tmax = 50.0;
+    
+	float precis = DIST_EPSILON;
+    float t = tmin;
+    float eta = -1.;
+    vec3 res;
+    for( int i=0; i<200; i++ )
+    {
+	     res = map(p+rd*t);
+      
+
+        eta = res.z;
+        if( res.x<precis || t>tmax ) break;
+        t += res.x;
+    }
+    
+    p+=rd*t;
+    // calculate normal in the father point to avoid artifacts
+    vec3 n = calcNormal(p-rd*(precis-res.x));
+    CP cp = CP(t, n, res.y, p);
+
+    return cp;
+}
+
+//-------------------------------------------------------------------------------
+
+
+vec3 getColor(in Ray ray, vec3 pos) {
+    vec3 col = vec3(0);
+    if (ray.cp.mat == ID_FLOOR) {
+        const float m = 3.;
+        vec2 p = fract(vec2(-pos.x+0.5,pos.z+0.5)/m)*m;
+        col = texture2D(iChannel0, p.xy).xyz;
+    } else {
+        col = ray.col * SURFACE_COLOR;
+    }
+
+ 	return col;
+
+}    
+
+//-------------------------------------------------------------------------------
+
+
+#ifdef RECURSION
+
+vec3 getRayColor(Ray ray) {
+
+    vec3 p =  ray.cp.p;
+    float d = mix(DENSITY_MIN, DENSITY_MAX, (ray.eta - ETA)/(1./ETA-ETA));
+    vec3 matColor = mix(AIR_COLOR, MATERIAL_COLOR, (ray.eta - ETA)/(1./ETA-ETA));
+    vec3 col = getColor(ray,p);
+
+    float q = exp(-d*ray.cp.dist);
+    col = col*q+matColor*(1.-q);
+    return col*ray.share;
+}
+
+void getRays(inout Ray ray, out Ray r1, out Ray r2) {
+     vec3 p = ray.cp.p;
+    float cs = dot(ray.cp.normal, ray.rd);
+    // simple approximation
+    float fresnel = 1.0-abs(cs);
+    vec3 normal = sign(cs)*ray.cp.normal;
+    vec3 refr = refract(ray.rd, -normal, ray.eta);
+    vec3 refl = reflect(ray.rd, ray.cp.normal);
+    vec3 z = normal*DIST_EPSILON*2.;
+    p += z;
+    r1 = Ray(refr, findIntersection(p, refr),  vec3(0),1.-fresnel, 1./ray.eta);
+    p -= 2.*z;
+    r2 = Ray( refl, findIntersection(p, refl), vec3(0),fresnel, ray.eta);
+}
+    
+// set of "recursion" functions
+void rec2(inout Ray ray) {
+	
+    Ray r1,r2;
+    getRays(ray, r1, r2);
+
+    ray.col += getRayColor(r1);
+    ray.col += getRayColor(r2);
+}
+
+void rec3(inout Ray ray) {
+    Ray r1,r2;
+    getRays(ray, r1, r2);
+    
+    rec2(r1);
+    ray.col += getRayColor(r1);
+    rec2(r2);
+    ray.col += getRayColor(r2);
+}
+
+void rec4(inout Ray ray) {
+    Ray r1,r2;
+    getRays(ray, r1, r2);
+    
+    rec3(r1);
+    ray.col += getRayColor(r1);
+    rec3(r2);
+    ray.col += getRayColor(r2);
+}
+
+void rec5(inout Ray ray) {
+    Ray r1,r2;
+    getRays(ray, r1, r2);
+    
+    rec4(r1);
+    ray.col += getRayColor(r1);
+    rec4(r2);
+    ray.col += getRayColor(r2);
+}
+
+void rec6(inout Ray ray) {
+    Ray r1,r2;
+    getRays(ray, r1, r2);
+    
+    rec5(r1);
+    ray.col += getRayColor(r1);
+    rec5(r2);
+    ray.col += getRayColor(r2);
+}
+
+
+
+vec3 castRay(vec3 p, vec3 rd) {
+    CP cp = findIntersection(p, rd);
+   
+    Ray ray = Ray( rd, cp, vec3(0), 1., ETA);
+    calcRecursion(ray);
+    ray.col += getRayColor(ray);
+	return ray.col;
+    
+}
+
+#else
+//-------------------------------------------------------------------------------
+
+// shorter but a bit slower 
+    
+Ray rays[RAY_COUNT];
+vec3 castRay(vec3 p, vec3 rd) {
+   
+   
+    CP cp = findIntersection(p, rd);
+   
+    rays[0] = Ray( rd, cp, vec3(0), 1., ETA);
+
+    for(int i = 0; i < RAY_COUNT/2; ++i) {
+        Ray ray = rays[i];
+        
+		vec3 p = ray.cp.p;
+       	 float cs = dot(ray.cp.normal, ray.rd);
+        float fresnel = 1.0-abs(cs);
+        //float fresnel =mix(0.2, 1., pow(1.-abs(cs),2.));
+         vec3 normal = sign(cs)*ray.cp.normal;
+    	vec3 refr = refract(ray.rd, -normal, ray.eta);
+        vec3 refl = reflect(ray.rd, ray.cp.normal);
+        vec3 z = normal*DIST_EPSILON*2.;
+        p += z;
+        rays[i*2+1] = Ray(refr, findIntersection(p, refr),  vec3(0),1.-fresnel, 1./ray.eta);
+        p -= 2.*z;
+        rays[i*2 + 2] = Ray( refl, findIntersection(p, refl), vec3(0),fresnel, ray.eta);
+    }
+    
+    for(int i = RAY_COUNT-1; i>=0;--i) {
+        Ray ray = rays[i];
+        vec3 p =  ray.cp.p;
+		vec3 atColor;
+        float  d = mix(DENSITY_MIN, DENSITY_MAX, (ray.eta - ETA)/(1./ETA-ETA));
+        vec3 matColor = mix(AIR_COLOR, MATERIAL_COLOR, (ray.eta - ETA)/(1./ETA-ETA));
+        vec3 col = getColor(ray, p);
+        float q = exp(-d*ray.cp.dist);
+        col = col*q+matColor*(1.-q);
+        rays[(i-1)/2].col += col*ray.share;
+
+    }
+   
+	return rays[0].col;
+}
+
+#endif
+
+
+vec3 render(vec3 p, vec3 rd) {
+    vec3 col= castRay(p, rd);
+    return col;
+}
+
+// https://www.shadertoy.com/view/Xds3zN
+mat3 setCamera( in vec3 ro, in vec3 ta, float cr )
+{
+	vec3 cw = normalize(ta-ro);
+	vec3 cp = vec3(sin(cr), cos(cr),0.0);
+	vec3 cu = normalize( cross(cw,cp) );
+	vec3 cv = normalize( cross(cu,cw) );
+    return mat3( cu, cv, cw );
+}
+
+void mainImage( out vec4 fragColor, in vec2 fragCoord )
+{
+	vec2 uv = fragCoord.xy / iResolution.xy-0.5;
+
+    uv.x*=iResolution.x/iResolution.y;
+    vec2 mo = iMouse.xy/iResolution.xy;
+    if (mo.x==mo.y && mo.x==0.) {
+        mo = vec2(0.42,0.4);
+    }
+
+    mo.y+=0.02;
+	mo.y *=1.57;
+    float time =iGlobalTime*0.1;;
+	mo.x*=10.;
+    float R = 4.3;
+    
+    float Y = sin(mo.y);
+    float X = cos(mo.y);
+	vec3 ro = vec3(cos(time + mo.x)*X, Y, X*sin(time + mo.x) )*R;
+	vec3 ta = vec3( 0,0.4,0);
+	
+	// camera-to-world transformation
+    mat3 ca = setCamera( ro, ta,0. );
+    
+    // ray direction
+	vec3 rd = ca * normalize( vec3(uv.xy,2.5) );
+    
+    vec3 c = render(ro, rd);
+
+	fragColor = vec4(c, 1);
+}
+
+void main() {
+	vec4 color;
+	mainImage(color, gl_FragCoord.xy);
+
+	color.w = 1.0;
+	gl_FragColor = color;
+}

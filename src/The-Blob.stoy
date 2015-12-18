@@ -1,0 +1,98 @@
+/*!
+ * <info>
+ * <author>4rknova [ https://www.shadertoy.com/user/4rknova ]</author>
+ * <name>The Blob</name>
+ * 
+ * <description>
+ *   Balls are touching.
+ * </description>
+ * 
+ * <url>https://www.shadertoy.com/view/XsXGRS</url>
+ * 
+ * <date>2013-06-30</date>
+ * 
+ * <tags>metaballs</tags>
+ * 
+ * <synthclipse-importer-legal-note>
+ *   As noted in: [ https://www.shadertoy.com/terms ]:
+ *   If the author did not stated otherwise, this shader is licensed under
+ *   Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License 
+ *   [ http://creativecommons.org/licenses/by-nc-sa/3.0/deed.en_US ].
+ * </synthclipse-importer-legal-note>
+ * </info>
+ */
+
+uniform vec3      iResolution;           // viewport resolution (in pixels)
+uniform float     iGlobalTime;           // shader playback time (in seconds)
+uniform float     iChannelTime[4];       // channel playback time (in seconds)
+uniform vec3      iChannelResolution[4]; // channel resolution (in pixels)
+uniform vec4      iMouse;                // mouse pixel coords. xy: current (if MLB down), zw: click
+uniform vec4      iDate;                 // (year, month, day, time in seconds)
+uniform float     iSampleRate;           // sound sample rate (i.e., 44100)
+
+
+// by nikos papadopoulos, 4rknova / 2013
+// Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.
+
+#ifdef GL_ES
+precision highp float;
+#endif
+
+//#define AA 4.
+
+#define CI vec3(.3,.5,.6)
+#define CO vec3(.2)
+#define CM vec3(.0)
+#define CE vec3(.8,.7,.5)
+
+float metaball(vec2 p, float r)
+{
+	return r / dot(p, p);
+}
+
+vec3 sample_(in vec2 uv)
+{
+	float t0 = sin(iGlobalTime * 1.9) * .46;
+	float t1 = sin(iGlobalTime * 2.4) * .49;
+	float t2 = cos(iGlobalTime * 1.4) * .57;
+
+	float r = metaball(uv + vec2(t0, t2), .33) *
+			  metaball(uv - vec2(t0, t1), .27) *
+			  metaball(uv + vec2(t1, t2), .59);
+
+	vec3 c = (r > .4 && r < .7)
+			  ? (vec3(step(.1, r*r*r)) * CE)
+			  : (r < .9 ? (r < .7 ? CO: CM) : CI);
+
+	return c;
+}
+
+void mainImage( out vec4 fragColor, in vec2 fragCoord )
+{
+	vec2 uv = (fragCoord.xy / iResolution.xy * 2. - 1.)
+			* vec2(iResolution.x / iResolution.y, 1) * 1.25;
+
+    vec3 col = vec3(0);
+
+#ifdef AA
+    // Antialiasing via supersampling
+    float e = 1. / min(iResolution.y , iResolution.x);    
+    for (float i = -AA; i < AA; ++i) {
+        for (float j = -AA; j < AA; ++j) {
+    		col += sample_(uv + vec2(i, j) * (e/AA)) / (4.*AA*AA);
+        }
+    }
+#else
+    col += sample_(uv);
+#endif /* AA */
+    
+    fragColor = vec4(clamp(col, 0., 1.), 1);
+}
+
+void main() {
+	vec4 color;
+	mainImage(color, gl_FragCoord.xy);
+
+	color.w = 1.0;
+	gl_FragColor = color;
+}

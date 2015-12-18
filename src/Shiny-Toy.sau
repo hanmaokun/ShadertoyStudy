@@ -1,0 +1,60 @@
+/*!
+ * <info>
+ * <author>eiffie [ https://www.shadertoy.com/user/eiffie ]</author>
+ * <name>Shiny Toy</name>
+ * 
+ * <description>
+ *   Who is more drunk, the driver, pilot, camera operator, road surveyor or coder?
+ *   Up the "Rays" value for a better quality.
+ * </description>
+ * 
+ * <url>https://www.shadertoy.com/view/ldsGWB</url>
+ * 
+ * <date>2013-09-10</date>
+ * 
+ * <tags>pathmarching</tags>
+ * 
+ * <synthclipse-importer-legal-note>
+ *   As noted in: [ https://www.shadertoy.com/terms ]:
+ *   If the author did not stated otherwise, this shader is licensed under
+ *   Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License 
+ *   [ http://creativecommons.org/licenses/by-nc-sa/3.0/deed.en_US ].
+ * </synthclipse-importer-legal-note>
+ * </info>
+ */
+
+uniform float     iBlockOffset;
+uniform float     iChannelTime[4];       // channel playback time (in seconds)
+uniform vec3      iChannelResolution[4]; // channel resolution (in pixels)
+uniform vec4      iDate;                 // (year, month, day, time in seconds)
+uniform float     iSampleRate;           // sound sample rate (i.e., 44100)
+
+
+//sorry, couldn't help myself
+/*float sawtooth(float time){return fract(time)-0.5;}
+
+vec2 mainSound(float time)
+{
+    return vec2( sawtooth(time*time) );
+}*/
+//v2 with LOTS of gears
+float saw(float time){return clamp(fract(time)*2.0-1.0,-0.5,0.5);}
+vec2 mainSound(float time)
+{
+    float t=pow(time+1.0,0.75);
+    t=mod(t,2.0)+1.0+floor(t*0.25+0.5);
+    t=pow(t,4.0);
+    return vec2( saw(t),saw(t+sin(time)) )*0.2;
+}
+
+
+void main() {
+	float t = iBlockOffset + (gl_FragCoord.x + gl_FragCoord.y * 512.0) / 44100.0;
+
+	vec2 y = mainSound(t);
+
+	vec2 v = floor((0.5 + 0.5 * y) * 65536.0);
+	vec2 vl = mod(v, 256.0) / 255.0;
+	vec2 vh = floor(v / 256.0) / 255.0;
+	gl_FragColor = vec4(vl.x, vh.x, vl.y, vh.y);
+}

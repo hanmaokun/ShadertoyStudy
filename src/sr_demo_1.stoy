@@ -1,0 +1,651 @@
+/*!
+ * <info>
+ * <author>rmotfage [ https://www.shadertoy.com/user/rmotfage ]</author>
+ * <name>terrain marching 7</name>
+ *
+ * <description>
+ *   v7<br/>colors
+ * </description>
+ *
+ * <url>https://www.shadertoy.com/view/MdjSRG</url>
+ *
+ * <date>2014-10-17</date>
+ *
+ * <tags>procedural, terrain</tags>
+ *
+ * <synthclipse-importer-legal-note>
+ *   As noted in: [ https://www.shadertoy.com/terms ]:
+ *   If the author did not stated otherwise, this shader is licensed under
+ *   Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License
+ *   [ http://creativecommons.org/licenses/by-nc-sa/3.0/deed.en_US ].
+ * </synthclipse-importer-legal-note>
+ * </info>
+ */
+
+uniform vec3      iResolution;           // viewport resolution (in pixels)
+uniform float     iGlobalTime;           // shader playback time (in seconds)
+uniform float     iChannelTime[4];       // channel playback time (in seconds)
+uniform vec3      iChannelResolution[4]; // channel resolution (in pixels)
+uniform vec4      iMouse;                // mouse pixel coords. xy: current (if MLB down), zw: click
+uniform vec4      iDate;                 // (year, month, day, time in seconds)
+uniform float     iSampleRate;           // sound sample rate (i.e., 44100)
+uniform sampler2D iChannel2; 			//! texture["Shadertoy/res/tex03.jpg"]
+uniform sampler2D iChannel0; 			//! texture["Shadertoy/res/tex12.png"]
+
+/* raymarching step */
+uniform float delt_march; 				//! slider[0.5, 0.8, 1]
+uniform float ro_y; 					//! slider[-1, 1.0, 10]
+uniform float g_rmEpsilon; 				//! slider[0.001, 0.002, 0.1]
+uniform float terrain_var;				//! slider[5, 8, 20]
+uniform float norm_reso;				//! slider[0, 0.001, 0.01]
+
+#define STEPS 		 	256
+#define CHANGE_SPEED 	0.06			/* terrain changing speed */
+#define VIEW_SCOPE   	2.0				/* view scope. */
+#define MINT 			0.001
+#define MAXT 			10.0
+
+#define LACU 2.0
+#define MAXGRASSSTEEP 0.05
+#define MAXGRASSALTITUDE 0.7
+#define MAXSNOWSTEEP   0.15
+#define MAXSNOWALTITUDE 0.85
+#define NORMALEPSILON 0.02
+#define SEALEVEL 0.01 //std 0.3
+#define CAMERAALTITUDE 5.3 //std 1.0
+#define CAMERASCREENDISTANCE 0.5 //std 0.4
+#define LOWITER 5
+#define HIGHITER 8
+#define COLORITER 5
+#define PENUMBRAFACTOR 0.01
+
+vec4 gotcha;
+
+/* ****************************************************************** */
+float conv(float f) {
+	f*=f*f*f;  //sealevel 0.01 - flat landscape with few hills
+	//f = f *(f *(f *(16.5333 - 6.4 * f )-13.6)+4.46667);
+	//f = f* (f* (f* (f* (33.4169-13.3668 *f)-29.2398)+10.4428)-0.253133); // plains with holes
+	//f = f* (f* (f* (f* (f* (119.616-40.3125 *f)-131.004)+63.0956)-11.5608)+1.16577);
+    if (f < SEALEVEL){f = SEALEVEL;}
+    return f;
+}
+
+
+// ***** noise code ***************************************************
+// Created by inigo quilez - iq/2013
+// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.
+
+//iq hash
+float hash( float n )
+{
+    return fract(sin(n)*54321.98761234);  // value has no meaning that I could find
+}
+
+//iq derivative noise function
+// returns vec3(noise, dnoise/dx, dnoise/dy)
+vec3 noised(vec2 pos )
+{
+    vec2 p = floor(pos);
+    vec2 f = fract(pos);
+
+    vec2 u = (10.0+(-15.0+6.0*f)*f)*f*f*f;  // f=6*x^5-15*x^4+10*x^3  df/dx=30*x^4-60*x^3+30*x^2; horner of df is 30.0*f*f*(f*(f-2.0)+1.0)
+
+    float n = p.x + p.y*57.0;
+
+    float a = hash(n+  0.0);
+    float b = hash(n+  1.0);
+    float c = hash(n+ 57.0); // do not know why 57 & 58
+    float d = hash(n+ 58.0);
+
+    return vec3( a+(b-a)*u.x+(c-a)*u.y+(a-b-c+d)*u.x*u.y,
+    30.0*f*f*(f*(f-2.0)+1.0) * (vec2(b-a,c-a)+(a-b-c+d)*u.yx) );
+
+}
+
+//iq  noise function
+float noise(vec2 x )
+{
+    vec2 p = floor(x);
+    vec2 f = fract(x);
+
+    f= (10.0+(-15.0+6.0*f)*f)*f*f*f; // smooth_
+
+    float n = p.x + p.y*57.0;
+
+    float res = mix(mix( hash(n+  0.0), hash(n+  1.0),f.x),
+    mix( hash(n+ 57.0), hash(n+ 58.0),f.x),f.y);
+
+    return res;
+}
+
+
+/* ****************************************************************** */
+
+
+/* ****************************************************************** */
+
+
+// fractional brownian motion
+// iter is number of octaves
+
+vec3 fbmDerivative(vec2 p, int iter) {
+
+    float f = 0.0;
+	float dfx = 0.0;
+	float dfy = 0.0;
+    float fLacunarity = LACU;
+
+	float amplitude = 0.5;
+	float sumAmplitude = 0.0;
+
+	for (int i=0;i<20;i++) {
+		vec3 value = noised( p );
+
+		f += amplitude * value.x;
+		dfx +=  value.y;
+		dfy +=  value.z;
+		p = p * fLacunarity;
+		sumAmplitude+=amplitude;
+		amplitude/=2.0;
+		if (i>iter) {break;}
+	}
+	f/=sumAmplitude;
+
+    return vec3( conv(f), dfx, dfy);
+}
+
+// same as above, without derivatives
+float fbm(vec2 p, int iter){
+	int idx=0;
+    float f = 0.0;
+	float amplitude = 0.5;
+	float sumAmplitude = 0.0;
+	for (int i=0;i<20;i++) {
+		float value = noise( p );
+		f += amplitude * value;
+		p = p * LACU;
+		sumAmplitude+=amplitude;
+		amplitude/=2.0;
+		if ( i>iter ) {break;}
+	}
+	f/=sumAmplitude;
+    return conv(f);
+}
+
+vec3 getNormal( vec3 p, int iter ) {
+	//using noise derivative
+	//not sure this code is correct
+    vec3 value;
+	value = fbmDerivative( p.xz, iter);
+	if (value.x <= SEALEVEL) { return vec3(.0,1.0,.0); } //sea is flat
+	float dfx=value.y;
+	float dfz=value.z;
+
+	return normalize(vec3( -value.y, 1.0, -value.z));
+}
+
+vec2 hash2(vec2 p ) {
+   return fract(sin(vec2(dot(p, vec2(123.4, 748.6)), dot(p, vec2(547.3, 659.3))))*5232.85324);
+}
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(43.232, 75.876)))*4526.3257);
+}
+
+float voronoi(vec2 p) {
+    vec2 n = floor(p);
+    vec2 f = fract(p);
+    float md = 5.0;
+    vec2 m = vec2(0.0);
+    for (int i = -1;i<=1;i++) {
+        for (int j = -1;j<=1;j++) {
+            vec2 g = vec2(i, j);
+            vec2 o = hash2(n+g);
+            o = 0.5+0.5*sin(iGlobalTime+5.038*o);
+            vec2 r = g + o - f;
+            float d = dot(r, r);
+            if (d<md) {
+              md = d;
+              m = n+g+o;
+            }
+        }
+    }
+    return md;
+}
+
+float ov(vec2 p) {
+    float v = 0.0;
+    float a = 0.4;
+    for (int i = 0;i<3;i++) {
+        v+= voronoi(p)*a;
+        p*=2.0;
+        a*=0.5;
+    }
+    return v;
+}
+
+vec4 ripple(in vec2 uv) {
+    vec4 a = vec4(0.2, 0.4, 1.0, 1.0);
+    vec4 b = vec4(0.85, 0.9, 1.0, 1.0);
+	return vec4(mix(a, b, smoothstep(0.0, 0.5, ov(uv*20.0))));
+}
+
+// #####################################################################
+vec3 GenerateTerrainColor(vec3 position, vec3 normal) {
+    float x = position.x;
+    float y = position.z;
+    float z = position.y;
+	float n = getNormal(position,COLORITER).y;
+    float l = 1.0;
+    vec3 terrainColor;
+    vec3 cmin,cmax;
+
+    // *** palette ***
+
+    // water
+    vec3 ocean      = ripple(position.xz).rgb;
+    vec3 shore      = vec3( 0.1, .2,.6);
+
+    // base layer
+    vec3 beach      = vec3(224.0, 202.0, 181.0)/255.0;
+    vec3 earth      = vec3(239.0, 200.0, 143.0)/255.0;
+    vec3 calcaire   = vec3(132.0, 50.0, 50.0)/255.0;  // marron rouge
+    vec3 rocks      = vec3(105.0, 85.0, 110.0)/255.0; // gris
+
+    // grass layer
+    vec3 grass1 = vec3 (8.0, 24.0, 4.0)/255.0;
+    vec3 grass2 = vec3 (16.0, 48.0, 4.0)/255.0;
+
+    // snow layer
+    vec3 snow1 = vec3 ( .78,.78,.78);
+    vec3 snow2 = vec3 ( .9,.9,.9);
+
+    if ( z <= SEALEVEL) {
+        //water
+        //terrainColor = mix (ocean, shore , smoothstep( 0.0, 1.0,  noise( position.xz * 16.0)) );
+		terrainColor = ocean * 1/exp(z-0.34);
+        return terrainColor;
+    }
+
+
+	// add some noise
+	// input noise divisor define size of stains in transition areas
+    // multiplicator define the size of the range of altitude with mixed color
+    z += noise( position.xz * 32.0 )* 0.1;
+
+    // base color
+    terrainColor = mix (        beach,    earth, smoothstep(SEALEVEL    , SEALEVEL+0.1 , z) );
+    terrainColor = mix ( terrainColor, calcaire, smoothstep(SEALEVEL+0.1, SEALEVEL+0.3 , z) );
+    terrainColor = mix ( terrainColor,    rocks, smoothstep(SEALEVEL+0.3,          1.0  , z) );
+
+    //add grass
+    if (( n > MAXGRASSSTEEP ) && ( z <  MAXGRASSALTITUDE )) {
+        terrainColor = mix( grass1, grass2, smoothstep(0.0 , 1.0, noise( position.xz * 32.0 )));
+    }
+
+    // add snow
+    if (( n > MAXSNOWSTEEP) && ( z > MAXSNOWALTITUDE )) {
+        return mix( snow1, snow2, smoothstep(0.0 , 1.0, noise( position.xz * 1.0 )*0.1));
+	}
+    return vec3(terrainColor);;
+}
+
+const mat2 m2 = mat2(0.8,-0.6,0.6,0.8);
+
+float detailH( in vec2 x )
+{
+    float d = 0.0;//50.0*texture2D( iChannel2, x*0.03/SC, 0.0 ).x;
+    return d + 0.5*texture2D( iChannel2, x*2.0, 0.0 ).x;
+}
+
+float terrainM( in vec2 x )
+{
+	vec2  p = x * terrain_var;
+    float a = 0.0;
+    float b = 1.0;
+	vec2  d = vec2(0.0);
+    for( int i=0; i<9; i++ )
+    {
+        vec3 n = noised(p);
+        d += n.yz;
+        a += b*n.x/(1.0+dot(d,d));
+		b *= 0.5;
+        p = m2*p*2.0;
+    }
+	return a - detailH(x);
+}
+
+// ###################################################################
+
+vec3 mod289(vec3 x) {
+  return x - floor(x * (1.0 / 289.0)) * 289.0;
+}
+
+vec4 mod289(vec4 x) {
+  return x - floor(x * (1.0 / 289.0)) * 289.0;
+}
+
+vec4 permute(vec4 x) {
+     return mod289(((x*34.0)+1.0)*x);
+}
+
+vec4 taylorInvSqrt(vec4 r)
+{
+  return 1.79284291400159 - 0.85373472095314 * r;
+}
+
+float snoise(vec2 pos)
+{
+  vec3 v = vec3(pos * VIEW_SCOPE, iGlobalTime * CHANGE_SPEED);
+
+  const vec2  C = vec2(1.0/6.0, 1.0/3.0) ;
+  const vec4  D = vec4(0.0, 0.5, 1.0, 2.0);
+
+// First corner
+  vec3 i  = floor(v + dot(v, C.yyy) );
+  vec3 x0 =   v - i + dot(i, C.xxx) ;
+
+// Other corners
+  vec3 g = step(x0.yzx, x0.xyz);
+  vec3 l = 1.0 - g;
+  vec3 i1 = min( g.xyz, l.zxy );
+  vec3 i2 = max( g.xyz, l.zxy );
+
+  //   x0 = x0 - 0.0 + 0.0 * C.xxx;
+  //   x1 = x0 - i1  + 1.0 * C.xxx;
+  //   x2 = x0 - i2  + 2.0 * C.xxx;
+  //   x3 = x0 - 1.0 + 3.0 * C.xxx;
+  vec3 x1 = x0 - i1 + C.xxx;
+  vec3 x2 = x0 - i2 + C.yyy; // 2.0*C.x = 1/3 = C.y
+  vec3 x3 = x0 - D.yyy;      // -1.0+3.0*C.x = -0.5 = -D.y
+
+// Permutations
+  i = mod289(i);
+  vec4 p = permute( permute( permute(
+             i.z + vec4(0.0, i1.z, i2.z, 1.0 ))
+           + i.y + vec4(0.0, i1.y, i2.y, 1.0 ))
+           + i.x + vec4(0.0, i1.x, i2.x, 1.0 ));
+
+// Gradients: 7x7 points over a square, mapped onto an octahedron.
+// The ring size 17*17 = 289 is close to a multiple of 49 (49*6 = 294)
+  float n_ = 0.142857142857; // 1.0/7.0
+  vec3  ns = n_ * D.wyz - D.xzx;
+
+  vec4 j = p - 49.0 * floor(p * ns.z * ns.z);  //  mod(p,7*7)
+
+  vec4 x_ = floor(j * ns.z);
+  vec4 y_ = floor(j - 7.0 * x_ );    // mod(j,N)
+
+  vec4 x = x_ *ns.x + ns.yyyy;
+  vec4 y = y_ *ns.x + ns.yyyy;
+  vec4 h = 1.0 - abs(x) - abs(y);
+
+  vec4 b0 = vec4( x.xy, y.xy );
+  vec4 b1 = vec4( x.zw, y.zw );
+
+  //vec4 s0 = vec4(lessThan(b0,0.0))*2.0 - 1.0;
+  //vec4 s1 = vec4(lessThan(b1,0.0))*2.0 - 1.0;
+  vec4 s0 = floor(b0)*2.0 + 1.0;
+  vec4 s1 = floor(b1)*2.0 + 1.0;
+  vec4 sh = -step(h, vec4(0.0));
+
+  vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy ;
+  vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww ;
+
+  vec3 p0 = vec3(a0.xy,h.x);
+  vec3 p1 = vec3(a0.zw,h.y);
+  vec3 p2 = vec3(a1.xy,h.z);
+  vec3 p3 = vec3(a1.zw,h.w);
+
+//Normalise gradients
+  vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2, p2), dot(p3,p3)));
+  p0 *= norm.x;
+  p1 *= norm.y;
+  p2 *= norm.z;
+  p3 *= norm.w;
+
+// Mix final noise value
+  vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+  m = m * m;
+  float result = 42.0 * dot( m*m, vec4( dot(p0,x0), dot(p1,x1),
+                                dot(p2,x2), dot(p3,x3) ) );
+
+  result += terrainM(v.xy)/20;
+  return result;
+ }
+
+
+// ###################################################################
+bool castRay(in vec3 ro, in vec3 rd, out float resT)
+{
+    float t = MINT;
+	for( int i=0; i<STEPS; i++ )
+	{
+		vec3 p = ro + t*rd;
+		float h = p.y - snoise(2*p.xz);
+
+		if( h<(g_rmEpsilon * t)) {
+			resT = t;
+			gotcha =  vec4(p.x, p.y, p.z, t);
+			return true;
+		}else if(t>MAXT) {
+			return false;
+		}
+
+		t += delt_march * h;
+	}
+}
+
+// ###################################################################
+
+vec3 calcLookAtDirection( vec3 cP, vec3 cD, float screenDistance, vec2 z ){
+    // cameraPosition
+    // cameraDirection
+    // camera-screen distance
+    // position of pixel on screen
+
+    // normalize camera direction
+    vec3 cDnorm = normalize (cD);
+
+    // we are looking for u & v, the unity vectors on screen, in world coordinates
+    // we know that u is // to surface (since we locked horizon at horizontal ):its Y is 0
+    // we know that cDnorm is perpendicular to u
+    // we project to surface to find u.x and u.y
+    vec3 u = vec3(cDnorm.z, 0.0,cDnorm.x);
+
+    vec3 v = cross( cDnorm, u);
+
+    //screen point 0,0 in world coordiante
+    vec3 screenPointOO = cP + cDnorm * screenDistance;
+
+    //z in world coordiantes
+    vec3 screenPointInWorld= screenPointOO + u*z.x + v*z.y;
+
+    return  (screenPointInWorld-cP);
+
+}
+
+// #################################################################
+
+vec3 calcStartPosition( vec3 cP, vec3 cD, float screenDistance, vec2 z ){
+    // cameraPosition
+    // cameraDirection
+    // camera-screen distance
+    // position of pixel on screen
+
+    // normalize camera direction
+    vec3 cDnorm = normalize (cD);
+
+    // we are looking for u & v, the unity vectors on screen, in world coordinates
+    // we know that u is // to surface =&gt; its Y is 0
+    // we know that cDnorm is perpendicular to u
+    // we project to surface to find u.x and u.y
+    vec3 u = vec3(cDnorm.z, 0.0,cDnorm.x);
+
+    vec3 v = cross( cDnorm, u);
+
+    //screen point 0,0 in world coordiante
+    vec3 screenPointOO = cP + cDnorm * screenDistance;
+
+    //z in world coordiantes
+    vec3 screenPointInWorld= screenPointOO + u*z.x + v*z.y;
+
+    return  screenPointInWorld;
+
+}
+
+// #################################################################
+vec3 getNormal( vec3 p ) {
+	//noise derivative
+    vec3 value;
+	value = fbmDerivative( p.xz, HIGHITER);
+	if (value.x <= SEALEVEL) { return vec3(.0,1.0,.0); }
+	float dfx=value.y;
+	float dfz=value.z;
+	//float vy = 1.0 ;	vy -= dfx*dfx + dfz*dfz;vy=sqrt(vy);
+
+	return normalize(vec3( -value.y, 1.0, -value.z));
+}
+
+
+ vec3 getNormalC( vec3 p ) {
+	//central differences
+    float eps=NORMALEPSILON;
+    vec3  n = vec3( fbm( vec2(p.x-eps,p.z), HIGHITER ) - fbm( vec2(p.x+eps,p.z), HIGHITER ),
+				  	2.0*eps,
+    				fbm(vec2(p.x,p.z-eps), HIGHITER ) - fbm(vec2(p.x,p.z+eps), HIGHITER ) );
+    return normalize( n );
+}
+
+
+// #################################################################
+float castRay2Sun( vec3 startPosition, vec3 lookatDirection )  {
+    float step = 0.03;
+    float lastStep;
+    float altitude = 0.0;
+    float lastAltitude;
+    float lastY;
+    float walkStep = 0.0;
+	float delta;
+    float result = 1.0;
+    vec3 p;
+    lastStep=step;
+    for( int i = 0; i < 20; i++ ) { // GLSL limitation: loop on int only
+        walkStep += step;
+        p = startPosition + lookatDirection * walkStep;
+        altitude = fbm( vec2(p.x, p.z) , HIGHITER);
+		delta = p.y -  altitude;
+
+        // if we are about to intersect (=> delta is small)
+        // and we are not too far from our starting point ( / walkStep)
+        // we are on the border of the penumbra
+        // so we can shade by penumbrafactor + constantThatDefineBorderSize * delta/walkstep
+        result = min( result, PENUMBRAFACTOR + 16.0 * delta / walkStep );
+
+        if( delta < .0){
+			return PENUMBRAFACTOR; //penombre
+        }
+
+
+    }
+    return result;
+    //return 1.0;
+}
+
+vec3 getShading( vec3 position , vec3 normal ) {
+    vec3 uAmbientColor = vec3 (0.18, 0.18, 0.2) / 2.0;         // ambiant light color
+    vec3 uLightingDirection = vec3(-0.9, 0.2, 0.1); // sunlight direction
+    vec3 uDirectionalColor = vec3( 1.47, 1.35, 1.25);  // sunlight color
+
+    float penombre = 1.0;
+    vec3 color;
+
+    // march to sun. if we intersect a moutain, we are in its shadow
+    penombre = castRay2Sun(  position ,uLightingDirection) ;
+    //if (castRay2Sun(  position ,uLightingDirection) < 1.0) {penombre=vec3(0.1);}
+
+
+    //directional lightning (sun)
+    float directionalLightWeighting = max(dot(normal, uLightingDirection), 0.0);
+
+    //final lightning: ambiant, sun, penumbra
+    color = uAmbientColor;
+    color += uDirectionalColor * directionalLightWeighting * penombre;
+
+	//color = vec3(1.0, 1.0, 1.0) * penombre; // usefull to debug penumbra
+
+    return color;
+
+}
+
+// #################################################################
+
+vec4 applyFog ( vec3 color, float far) {
+	//just to hide clipping
+	return vec4(color, 1.0);
+    //return vec4( mix( color ,vec3(0.5,0.5,0.6), smoothstep(0.0,1.0,far/25.0) ) ,1.0);
+}
+
+// #################################################################
+
+vec3 calcNormal( in vec3 pos, float t )
+{
+    vec2  eps = vec2( norm_reso * t, 0.0 );
+    return normalize( vec3( snoise(pos.xz-eps.xy) - snoise(pos.xz+eps.xy),
+                            2.0*eps.x,
+							snoise(pos.xz-eps.yx) - snoise(pos.xz+eps.yx) ) );
+}
+
+vec4 colorize(vec3 startPosition, vec3 lookatDirection, vec4 gotchat) {
+
+    vec3 p = gotchat.rgb;	//startPosition + lookatDirection * t;
+    vec3 n = calcNormal( p, gotchat.w );
+    vec3 s = getShading( p, n );
+    vec3 m = GenerateTerrainColor( p.xyz, n ); //getMaterial( p, n );
+    //return applyFog( n, position.w );
+
+    return vec4(m*s, 1.0);
+
+}
+
+// ###################################################################
+void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
+	vec2 uv = fragCoord.xy / iResolution.xy;
+	uv.y /= iResolution.x/iResolution.y;
+
+	vec3 eye = vec3(0, 0, -1);
+	vec3 up = vec3(0, 1, 0);
+	vec3 right = vec3(1, 0, 0);
+	vec3 front = vec3(0, 0, 1);
+
+	vec3 ro = right * uv.x + front * uv.y;
+	ro.y += ro_y;
+	vec3 rd = normalize(cross(right, front));
+
+	vec4 color = vec4(0.0); // default black color
+
+	float t;
+
+    if (castRay( ro, rd, t )) {
+    	vec3 height = ro + rd * t;
+        color = colorize( ro, rd, gotcha);
+        if(height.y < 0.1) {
+
+        }
+    } else {
+        // sky color;
+        color = vec4( mix ( vec3(0.7,0.9,1.0), vec3(0.5,0.5,0.6), smoothstep(0.0,1.0,-gotcha.w/30.0)), 1.0);
+    }
+
+    // gamma correction
+    fragColor = pow( color, vec4(1.0/2.2,1.0/2.2,1.0/2.2,1.0) );
+
+}   // main
+
+void main() {
+	vec4 color;
+	mainImage(color, gl_FragCoord.xy);
+
+	color.w = 1.0;
+	gl_FragColor = color;
+}

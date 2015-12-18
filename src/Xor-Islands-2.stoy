@@ -1,0 +1,210 @@
+/*!
+ * <info>
+ * <author>Xor [ https://www.shadertoy.com/user/Xor ]</author>
+ * <name>Xor - Islands 2</name>
+ * 
+ * <description>
+ *   Look around with the mouse.
+ * </description>
+ * 
+ * <url>https://www.shadertoy.com/view/4lXGWf</url>
+ * 
+ * <date>2015-03-05</date>
+ * 
+ * <tags>procedural, 3d, reflections</tags>
+ * 
+ * <synthclipse-importer-legal-note>
+ *   As noted in: [ https://www.shadertoy.com/terms ]:
+ *   If the author did not stated otherwise, this shader is licensed under
+ *   Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License 
+ *   [ http://creativecommons.org/licenses/by-nc-sa/3.0/deed.en_US ].
+ * </synthclipse-importer-legal-note>
+ * </info>
+ */
+
+uniform vec3      iResolution;           // viewport resolution (in pixels)
+uniform float     iGlobalTime;           // shader playback time (in seconds)
+uniform float     iChannelTime[4];       // channel playback time (in seconds)
+uniform vec3      iChannelResolution[4]; // channel resolution (in pixels)
+uniform vec4      iMouse;                // mouse pixel coords. xy: current (if MLB down), zw: click
+uniform vec4      iDate;                 // (year, month, day, time in seconds)
+uniform float     iSampleRate;           // sound sample rate (i.e., 44100)
+uniform sampler2D iChannel1; //! texture["Shadertoy/res/tex05.jpg"]
+uniform sampler2D iChannel0; //! texture["Shadertoy/res/tex06.jpg"]
+
+uniform float     cam_pos_y; //! slider[-10, 0, 200]
+
+float time = iGlobalTime;
+/*float smin( float a, float b, float k )
+{
+    float res = exp( -k*a ) + exp( -k*b );
+    return -log( res )/k;
+}*/
+float sfract(float n)
+{
+    return smoothstep(0.0,1.0,fract(n));
+}
+float rand(vec2 n)
+{
+ 	return fract(abs(sin(dot(n,vec2(5.3357,-5.8464))))*256.75+0.325);   
+}
+
+float noise(vec2 n)
+{
+    float h1 = mix(rand(vec2(floor(n.x),floor(n.y))),rand(vec2(ceil(n.x),floor(n.y))),sfract(n.x));
+    float h2 = mix(rand(vec2(floor(n.x),ceil(n.y))),rand(vec2(ceil(n.x),ceil(n.y))),sfract(n.x));
+    float s1 = mix(h1,h2,sfract(n.y));
+    return s1;
+}
+void doCamera( out vec3 camPos, out vec3 camTar, in float time, in float mouseX )
+{
+    vec2 dir = ((iMouse.xy/iResolution.xy)*vec2(1.0,-1.0)+vec2(0.0,0.75))*6.28;
+    //vec2 dir = vec2(-1.0, 1.0)*6.28;
+    vec3 pos = vec3(noise((time/32.0)*vec2(1.0,0.0)),0.1,noise((time/32.0)*vec2(0.0,1.0)))*20.0;
+	pos += cam_pos_y;
+	camPos =  pos;//vec3(cos(time/4.0)*8.0,1.0,sin(time/4.0)*8.0);
+    camTar = pos+vec3(cos(dir.x)*cos(dir.y),sin(dir.y),sin(dir.x)*cos(dir.y));//vec3(cos(time/4.0+0.1)*12.0,-1.0,sin(time/4.0+0.1)*12.0);
+}
+vec3 doBackground( in vec3 dir)
+{
+    float sky = dot(dir,vec3(0.0,-1.0,0.0))*0.5+0.5;
+    float sun = pow(dot(dir,normalize(vec3(1.0,0.7,0.9)))*0.5+0.5,32.0);
+    vec2 p = vec2(dir.x+dir.z,dir.y-dir.z);
+    float clouds = noise(p*8.0)*noise(p*9.0)*noise(p*10.0)*noise(p*11.0)*sky;
+    vec3 total = vec3(sky*0.6+0.05+sun+clouds,sky*0.8+0.075+pow(sun,1.5)+clouds,sky+0.2+pow(sun,4.0)+clouds);
+    return total;
+}
+    
+float doModel( vec3 p )
+{
+    float height = p.y-0.1*(noise(p.xz+vec2(time*0.7,time*0.6))*0.55+noise(p.xz*4.0+vec2(time))*0.3+noise(p.xz*16.0+vec2(0.0,time*0.5))*0.1+noise(p.xz*32.0)*0.05);
+    float terrain = p.y+1.0-4.0*((noise(p.xz*8.0)*0.1+noise(p.xz*3.0)*0.3+noise(p.xz*0.6)*0.4)*pow(noise(p.xz*0.4),2.0));
+    float model = min(height,terrain)*0.7;
+    return model;
+}
+vec3 doMaterial(in vec3 p, in vec3 rd, in vec3 nor )
+{
+    vec3 r = doBackground(reflect(rd,nor));
+    vec3 t = texture2D(iChannel0,fract(p.xy)).rgb*0.1+texture2D(iChannel0,fract(p.xz)).rgb*0.1+texture2D(iChannel0,fract(p.yz)).rgb*0.1;
+    t = mix(t,texture2D(iChannel1,fract(p.xz)).rgb*vec3(0.2,0.5,0.5),pow(clamp(nor.y,0.0,1.0),4.0)*noise(p.xz*0.4));
+    float n = -p.y+0.1*(noise(p.xz+vec2(time*0.7,time*0.6))*0.55+noise(p.xz*4.0+vec2(time))*0.3+noise(p.xz*16.0+vec2(0.0,time*0.5))*0.1+noise(p.xz*32.0)*0.05);
+    return mix(r,t,clamp(-n*64.0,0.0,1.0));
+}
+float calcSoftshadow( in vec3 ro, in vec3 rd );
+
+vec3 doLighting( in vec3 pos, in vec3 nor, in vec3 rd, in float dis, in vec3 mal )
+{
+    vec3 lin = vec3(0.0);
+
+    vec3  lig = normalize(vec3(1.0,0.7,0.9));
+    float dif = max(dot(nor,lig),0.0);
+    float sha = 0.6; if( dif>0.01 ) sha=calcSoftshadow( pos+0.02*nor, lig )*0.4+0.6;
+    
+    lin += dif*sha;
+    //lin += vec3(0.5,0.5,0.5);
+
+    vec3 col = mal*lin;
+
+	col = mix(doBackground(rd),col,1.0-clamp(dis*dis/90.0,0.0,1.0));
+
+    return col;
+}
+
+float calcIntersection( in vec3 ro, in vec3 rd )
+{
+	const float maxd = 10.0;           // max trace distance
+	const float precis = 0.001;        // precission of the intersection
+    float h = precis*2.0;
+    float t = 0.0;
+	float res = -1.0;
+    for( int i=0; i<90; i++ )          // max number of raymarching iterations is 90
+    {
+        if( h<precis||t>maxd ) break;
+	    h = doModel( ro+rd*t );
+        t += h*.8;
+    }
+
+    if( t<maxd ) res = t;
+    return res;
+}
+
+vec3 calcNormal( in vec3 pos )
+{
+    const float eps = 0.002;             // precision of the normal computation
+
+    const vec3 v1 = vec3( 1.0,-1.0,-1.0);
+    const vec3 v2 = vec3(-1.0,-1.0, 1.0);
+    const vec3 v3 = vec3(-1.0, 1.0,-1.0);
+    const vec3 v4 = vec3( 1.0, 1.0, 1.0);
+
+	return normalize( v1*doModel( pos + v1*eps ) + 
+					  v2*doModel( pos + v2*eps ) + 
+					  v3*doModel( pos + v3*eps ) + 
+					  v4*doModel( pos + v4*eps ) );
+}
+
+float calcSoftshadow( in vec3 ro, in vec3 rd )
+{
+    float res = 1.0;
+    float t = 0.5;                 // selfintersection avoidance distance
+	float h = 1.0;
+    for( int i=0; i<40; i++ )         // 40 is the max numnber of raymarching steps
+    {
+        h = doModel(ro + rd*t);
+        res = min( res, 64.0*h/t );   // 64 is the hardness of the shadows
+		t += h*0.6;//clamp( h, 0.02, 2.0 );   // limit the max and min stepping distances
+    }
+    return clamp(res,0.0,1.0);
+}
+
+mat3 calcLookAtMatrix( in vec3 ro, in vec3 ta, in float roll )
+{
+    vec3 ww = normalize( ta - ro );
+    vec3 uu = normalize( cross(ww,vec3(sin(roll),cos(roll),0.0) ) );
+    vec3 vv = normalize( cross(uu,ww));
+    return mat3( uu, vv, ww );
+}
+
+void mainImage( out vec4 fragColor, in vec2 fragCoord )
+{
+    vec2 p = (-iResolution.xy + 2.0*fragCoord.xy)/iResolution.y;
+    vec2 m = iMouse.xy/iResolution.xy;
+    
+    // camera movement
+    vec3 ro, ta;
+    doCamera( ro, ta, iGlobalTime, m.x );
+
+    // camera matrix
+    mat3 camMat = calcLookAtMatrix( ro, ta, 0.0 );  // 0.0 is the camera roll
+    
+	// create view ray
+	vec3 rd = normalize( camMat * vec3(p.xy,1.0) ); // 2.0 is the lens length
+
+	vec3 col = doBackground(rd);
+
+	// raymarch
+    float t = calcIntersection( ro, rd );
+    if( t>-0.5 )
+    {
+        // geometry
+        vec3 pos = ro + t*rd;
+        vec3 nor = calcNormal(pos);
+
+        // materials
+        vec3 mal = doMaterial(pos, rd, nor );
+
+        col = doLighting( pos, nor, rd, t, mal );
+	}
+    // gamma
+	col = pow( clamp(col,0.0,1.0), vec3(0.4545) );
+	   
+    fragColor = vec4( col, 1.0 );
+}
+
+void main() {
+	vec4 color;
+	mainImage(color, gl_FragCoord.xy);
+
+	color.w = 1.0;
+	gl_FragColor = color;
+}

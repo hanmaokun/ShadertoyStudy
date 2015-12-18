@@ -1,0 +1,546 @@
+/*!
+ * <info>
+ * <author>And390 [ https://www.shadertoy.com/user/And390 ]</author>
+ * <name>Disintegration</name>
+ * 
+ * <description>
+ *   Sphere morphing and space transformation.
+ * </description>
+ * 
+ * <url>https://www.shadertoy.com/view/Xdt3zB</url>
+ * 
+ * <date>2015-12-28</date>
+ * 
+ * <tags>transformation, morphing</tags>
+ * 
+ * <synthclipse-importer-legal-note>
+ *   As noted in: [ https://www.shadertoy.com/terms ]:
+ *   If the author did not stated otherwise, this shader is licensed under
+ *   Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License 
+ *   [ http://creativecommons.org/licenses/by-nc-sa/3.0/deed.en_US ].
+ * </synthclipse-importer-legal-note>
+ * </info>
+ */
+
+uniform vec3      iResolution;           // viewport resolution (in pixels)
+uniform float     iGlobalTime;           // shader playback time (in seconds)
+uniform float     iChannelTime[4];       // channel playback time (in seconds)
+uniform vec3      iChannelResolution[4]; // channel resolution (in pixels)
+uniform vec4      iMouse;                // mouse pixel coords. xy: current (if MLB down), zw: click
+uniform vec4      iDate;                 // (year, month, day, time in seconds)
+uniform float     iSampleRate;           // sound sample rate (i.e., 44100)
+uniform sampler2D iChannel0; //! texture["Shadertoy/res/tex18.jpg"]
+
+#define DIRECT_LIGHT vec3(1.0, 1.0, -1.0)
+const float directLight = 0.7;
+const float ambientLight = 0.4;
+const int lightsCount = 0;
+const float lightPower = 0.7;
+const float lightSpeed = 1.0;
+const float epsilon = 0.0001;
+
+float PI = acos(-1.);
+
+
+//        ----  system time stages  ----
+
+const float split1Duration = 4.;
+const float stay1Duration = 0.;
+const float translate1Duration = 6.;
+const float merge1Duration = 2.;
+const float lift1Duration = 12.;
+const float rotate1Duration = 10.;
+
+const float split1Time = 0.;
+const float split1TimeEnd = split1Time + split1Duration;
+const float stay1Time = split1TimeEnd;
+const float stay1TimeEnd = stay1Time + stay1Duration;
+const float translate1Time = stay1TimeEnd;
+const float translate1TimeEnd = translate1Time + translate1Duration;
+const float merge1Time = translate1TimeEnd;
+const float merge1TimeEnd = merge1Time + merge1Duration;
+const float lift1Time = merge1TimeEnd;
+const float lift1TimeEnd = lift1Time + lift1Duration;
+const float rotate1Time = lift1TimeEnd;
+const float rotate1TimeEnd = rotate1Time + rotate1Duration;
+
+const float totalDuration = lift1TimeEnd;  //rotate step is not used because of unresolved bug
+
+
+//        ----  dimensions  ----
+
+const float groundY = -1.5;
+
+const vec3 spherePos = vec3(-2., 0., 0.);
+const float sphereRad = 1.;
+
+
+//        ----  space transformation  ----
+
+const float trans1FrameLen = 1.0;
+const float trans1Value = -spherePos.x * 2.;
+
+const float lift1FrameLen = sphereRad;
+
+float spherePolarHalfLen = asin(sphereRad/-spherePos.x);
+float spherePolarLen = 2. * spherePolarHalfLen;
+float rotate1MorphFrameLen = spherePolarLen * 0.;
+float rotate1TransFrameLen = spherePolarLen * 2.;
+float rotate1MergeFrameLen = spherePolarLen * 0.;
+float rotate1TransValue = 2.*PI;
+float rotate1FrameLen = rotate1MorphFrameLen + rotate1TransFrameLen + rotate1MergeFrameLen;
+float rotate1FrameMoveLen = spherePolarLen + rotate1FrameLen * (2.*PI / rotate1TransValue);
+float rotate1FramePosWhenTranslatedFromStart = -spherePolarHalfLen - (rotate1TransFrameLen * spherePolarLen / rotate1TransValue);
+
+float sinStep(float x) {
+    return sin(x-0.5)*PI * 0.5 + 0.5;
+}
+
+float getTrans1FrameStart(vec3 p, float time) {
+    float t = sinStep((time - translate1Time) / translate1Duration);
+    return spherePos.x + sphereRad - t * (sphereRad*3. + trans1FrameLen) + max(abs(p.y), abs(p.z));
+}
+
+float getLift1FrameStart(float time) {
+    float t = (time - lift1Time) / lift1Duration;
+    return spherePos.y + sphereRad - t * (sphereRad * 2. + lift1FrameLen*2.);
+}
+
+vec3 transform(vec3 p, float time) {
+    if (time > translate1Time && time < translate1TimeEnd) {
+        float transFrameStart = getTrans1FrameStart(p, time);
+        float transFrameEnd = transFrameStart + trans1FrameLen;
+        if (p.x < transFrameStart)  ;  //nothing
+        else if (p.x < transFrameEnd)
+            p.x += trans1Value * (p.x-transFrameStart)/trans1FrameLen;
+        else   p.x += trans1Value;
+    }
+    else if (time >= translate1TimeEnd && time < lift1Time) {
+        p.x += trans1Value;
+    }
+    else if (time >= lift1Time && time < lift1TimeEnd) {
+        float frameStart = getLift1FrameStart(time);
+        float frameLen = lift1FrameLen;
+        if (p.y > frameStart + frameLen*2.) {
+            p.y = spherePos.y * 2. - p.y;
+        } else if (p.y > frameStart + frameLen) {
+            float up = (frameStart + 2.*frameLen - p.y) / frameLen;
+            p.y = spherePos.y*2. - (frameStart + frameLen*2.) + (1. / (1. - up) - 1.);
+        } else if (p.y > frameStart) {
+            float up = (p.y - frameStart) / frameLen;
+            p.y = frameStart + 1. / (1. - up) - 1.;
+            p.x += trans1Value;
+        } else {
+            p.x += trans1Value;
+        }
+    }
+    else if (time >= rotate1Time && time < rotate1TimeEnd) {
+        float t = (time - rotate1Time) / rotate1Duration; 
+        float frameStart = spherePolarHalfLen - t * rotate1FrameMoveLen;
+        frameStart += rotate1MorphFrameLen;  //we need only translate frame
+        float rad = -length(p.xz);
+        float angle = atan(-p.z, -p.x);
+        if (angle < frameStart)  ;  //nothing
+        else if (angle < frameStart + rotate1TransFrameLen)
+            angle += rotate1TransValue * (angle - frameStart) / rotate1TransFrameLen;
+        else
+            angle += rotate1TransValue;
+        p.x = cos(angle) * rad;
+        p.z = sin(angle) * rad;
+    }
+    return p;
+}
+
+vec3 reverseTransform(vec3 p, float time) {
+    if (time > translate1Time && time < translate1TimeEnd) {
+        float transFrameStart = getTrans1FrameStart(p, time);
+        float transFrameEnd = transFrameStart + trans1FrameLen;
+        if (p.x < transFrameStart)  ;  //nothing
+        else if (p.x < transFrameEnd+trans1Value)
+            p.x -= trans1Value * (p.x-transFrameStart)/(trans1FrameLen+trans1Value);
+        else   p.x -= trans1Value;
+    }
+    else if (time >= translate1TimeEnd && time < lift1Time) {
+        p.x -= trans1Value;
+    }
+    else if (time >= lift1Time && time < lift1TimeEnd) {
+        float frameStart = getLift1FrameStart(time);
+        float frameLen = lift1FrameLen;
+        if (p.x > 0.0 && p.y > frameStart) {
+            p.y = frameLen + frameStart - frameLen / (p.y - frameStart + 1.);
+            p.x -= trans1Value;
+        } else if (p.x < 0.0 && p.y > 2.*spherePos.y - (frameStart + frameLen*2.)) {
+            p.y = frameLen / (p.y - (2.*spherePos.y - (frameStart + frameLen*2.)) + 1.) + frameStart+frameLen;
+        } else if (p.x < 0.0 && p.y > spherePos.y - sphereRad) { // && p.y < 2.*spherePos.y - (frameStart + frameLen*2.)) {
+            p.y = spherePos.y * 2. - p.y;
+        } else {
+            p.x -= trans1Value;
+        }
+    }
+    else if (time >= rotate1Time && time < rotate1TimeEnd) {
+        float t = (time - rotate1Time) / rotate1Duration; 
+        float frameStart = spherePolarHalfLen - t * rotate1FrameMoveLen;
+        frameStart += rotate1MorphFrameLen;  //we need only translate frame
+        float frameEnd = frameStart + rotate1TransFrameLen;
+        float rad = -length(p.xz);
+        float angle = atan(-p.z, -p.x);
+        if (angle <= spherePolarHalfLen)
+            if (angle < -spherePolarHalfLen || frameStart < rotate1FramePosWhenTranslatedFromStart)
+                angle += 2.*PI;
+        if (angle < frameStart)  ;  //nothing
+        else if (angle < frameEnd + rotate1TransValue)
+            //angle = (angle + frameStart * rotate1TransValue / rotate1TransFrameLen) / (1. + rotate1TransValue / rotate1TransFrameLen);
+            angle -= rotate1TransValue * (angle - frameStart) / (rotate1TransFrameLen + rotate1TransValue);
+        else
+            angle -= rotate1TransValue;
+        p.x = cos(angle) * rad;
+        p.z = sin(angle) * rad;
+    }
+    return p;
+}
+
+
+//        ----  bubbles and morphing  ----
+
+float rand(float n){return fract(sin(n) * 43758.5453123);}
+
+float rand(vec2 n) {
+    return fract(sin(dot(n, vec2(12.9898, 4.1414))) * 43758.5453);
+}
+
+float rand(vec3 n) {
+    return fract(sin(dot(n, vec3(12.9898, 4.1414, 46.1872))) * 43758.5453);
+}
+
+vec3 rand3D(vec3 p) {
+    return vec3(rand(p), rand(p+vec3(46.1872,0,0)), rand(p+vec3(4.1414,0,0)));
+}
+
+float sqr(float x) {  return x * x;  }
+
+float mapBubbles(vec3 p, vec3 tranformedP, float time) {
+    float morphK;
+    if (time > split1Time && time < split1TimeEnd) {
+        morphK = (time - split1Time) / split1Duration;
+    } else if (time >= split1TimeEnd && time < merge1Time) {
+        morphK = 1.0;
+    } else if (time >= merge1Time && time < merge1TimeEnd) {
+        morphK = (merge1TimeEnd - time) / merge1Duration;
+    } else if (time >= lift1Time && time < lift1TimeEnd) {
+        float frameStart = getLift1FrameStart(time);
+        float frameLen = lift1FrameLen;
+        morphK = 1. - min(sqr((p.y - (frameStart+frameLen)) / frameLen), 1.);
+    } else if (time >= rotate1Time && time < rotate1TimeEnd) {
+        float t = (time - rotate1Time) / rotate1Duration;
+        float frameStart = spherePolarHalfLen - t * rotate1FrameMoveLen;
+        float angle = atan(-p.z, -p.x);
+        if (angle < frameStart)  morphK = 0.0;
+        else if (angle < frameStart + rotate1MorphFrameLen)  morphK = (angle - frameStart) / rotate1MorphFrameLen;
+        else  morphK = 1.0;
+    } else {
+        morphK = 0.0;
+    }
+
+    float cellSize = 0.2;
+    float bubbleRad = cellSize * 0.3;
+    vec3 cellPosBase = floor(p/cellSize);  //realative to cellSize
+
+    //    take into account the nearest cell and 8 neighbour cells
+    float totalDist = 1000.;
+    // for large bubbles radius +-1 is not enough, but it is no more performance
+    for (int x=-1; x<=1; x++)  for (int y=-1; y<=1; y++)  for (int z=-1; z<=1; z++)  {
+        vec3 cellPos = cellPosBase + vec3(x,y,z);
+        vec3 cellNoise = rand3D(cellPos);
+        vec3 bubblePos = (cellPos + cellNoise) * cellSize;
+        float rad = bubbleRad * rand(cellPos);
+        //    decrease bubbles size on border
+        float l = length(spherePos - bubblePos);
+        if (rad > sphereRad - l)  rad = mix(rad, sphereRad - l, morphK);
+        if (rad < 0.)  continue;
+
+        float dist = length(tranformedP - transform(bubblePos, time)) - rad;
+        //dist = min(dist, sphereDist);
+        //    merge neighbour bubbles
+        float k = mix(cellSize*1.5, cellSize*0.5, morphK);
+        float h = clamp(0.5 + 0.5*(totalDist-dist)/k, 0.0, 1.0);
+        totalDist = mix(totalDist, dist, h) - k*h*(1.0-h);
+    }
+
+    return totalDist;
+}
+
+//        ----  other raytracing  ----
+
+float map(vec3 p, inout bool insideSphere, float time, out bool ground) {
+    vec3 transformedPos = p;
+    p = reverseTransform(p, time);
+
+    float groundDist = transformedPos.y - groundY;
+    float sphereDist = length(p-spherePos) - sphereRad;
+    if (sphereDist < epsilon) {
+        float bubblesDist = mapBubbles(p, transformedPos, time);
+        if (bubblesDist < epsilon)  return insideSphere ? bubblesDist : sphereDist;
+        else {
+            insideSphere = true;
+            return bubblesDist;
+        }
+    } else {
+        insideSphere = false;
+    }
+    ground = groundDist < sphereDist;
+    return min(groundDist, sphereDist);
+}
+
+float map(vec3 p, inout bool insideSphere, float time) {
+    bool unused;
+    return map(p, insideSphere, time, unused);
+}
+
+vec3 calcNormal(vec3 p, bool insideSphere, float time) {
+    vec2 e = vec2(epsilon, 0.0);
+    bool u1=insideSphere, u2=insideSphere, u3=insideSphere, u4=insideSphere, u5=insideSphere, u6=insideSphere;
+    return normalize(vec3(map(p+e.xyy, u1, time) - map(p-e.xyy, u2, time),
+                          map(p+e.yxy, u3, time) - map(p-e.yxy, u4, time),
+                          map(p+e.yyx, u5, time) - map(p-e.yyx, u6, time)));
+}
+
+vec3 getLightPos(vec3 origin, int i) {
+    vec3 p = 1.0 * sin(lightSpeed * vec3(iGlobalTime*0.3, iGlobalTime*0.1, iGlobalTime*0.2) + 500.*vec3(i));
+    p.y += 1.;
+    return p;
+}
+
+float mapLight(vec3 p, vec3 origin) {
+    float d = 1000.;
+    for (int i=0; i<lightsCount; i++)  d = min(d, length(p - getLightPos(origin, i)) - 0.02);
+    return d;
+}
+
+float mapAll(vec3 p, vec3 origin, out bool matchLight, inout bool insideSphere, float time, out bool ground) {
+    float d = map(p, insideSphere, time, ground);
+    if (d < epsilon) {
+        matchLight = false;
+        return d;
+    } else {
+        matchLight = true;
+        return min(d, mapLight(p, origin));
+    }
+}
+
+float cloudsNoise(vec3 p);
+
+void mainImage( out vec4 fragColor, in vec2 fragCoord )
+{
+	vec2 uv = fragCoord.xy / iResolution.xy;
+    vec2 p = -1. + 2.*uv;
+
+    p.y /= iResolution.x / iResolution.y;
+
+    float mx = iMouse.xy == vec2(0.) ? 0.5 : iMouse.x / iResolution.x;
+    float my = iMouse.xy == vec2(0.) ? 0.5 : iMouse.y / iResolution.y;
+
+    float r = 4.;
+    float ay = my * 0.5 * PI;
+    float ax = (mx - 1.) * PI;
+    vec3 ro = vec3(cos(ax)*cos(ay)*r, sin(ay)*r, sin(ax)*cos(ay)*r);  //camera position
+    vec3 rd = normalize(vec3(p, 1.0));  //view direction
+    ay = -ay;
+    ax = -PI/2. - ax;
+    rd = vec3(rd.x, rd.z*sin(ay)+rd.y*cos(ay), rd.z*cos(ay)-rd.y*sin(ay));  //rotate by x
+    rd = vec3(rd.z*sin(ax)+rd.x*cos(ax), rd.y, rd.z*cos(ax)-rd.x*sin(ax));  //rotate by y
+
+    float time = mod(iGlobalTime, totalDuration);
+
+    //    ray tracing
+    float tmax = 30.0;
+    float t = 0.0;  //distance from point of view
+    float dist;
+    bool matchLight = false;
+    bool insideSphere = false;
+    bool matchGround = false;
+    for (int i=0; i<1000; i++) {
+        dist = mapAll(ro + t*rd, ro, matchLight, insideSphere, time, matchGround);  //distance to target
+        if (dist<epsilon)  break;
+        else  t += dist;
+        if (t > tmax)  break;
+    }
+
+    vec3 col = vec3(0);
+    if (dist<epsilon) {
+        //    lighting
+        if (matchLight) {
+            col = vec3(1., 1., 1.);
+        }
+        else {
+            vec3 pos = ro + t*rd;
+            vec3 normal = calcNormal(pos, insideSphere, time);
+            float lightness = ambientLight;
+            #ifdef DIRECT_LIGHT
+            {
+                vec3 lightDir = normalize(DIRECT_LIGHT);
+                lightness += max(0.0, dot(normal, lightDir)*directLight);
+            }
+            #endif
+            for (int l=0; l<lightsCount; l++) {
+                vec3 lightPos = getLightPos(ro, l);
+                vec3 lightDir = normalize(lightPos-pos);
+                float lightDist = length(lightPos-pos);
+                //if (lightDist >= lightDistance)  continue;
+
+                //float attenuation = pow(max(0.0, 1.0 - lightDist / lightDistance), lightDecay);
+                float attenuation = min(1.0, lightPower / lightDist);
+                lightness += dot(normal, lightDir) * attenuation;
+                if (lightness > (1.0/0.6))  break;
+            }
+            if (matchGround)  col = vec3(texture2D(iChannel0, pos.xz/10.)) * lightness;
+            else  col = vec3(0.8, 0.9, 1.0) * lightness;
+        }
+    }
+    else {
+        float clouds = cloudsNoise(rd) * pow(max(0., rd.y), 0.25);
+        col = mix(vec3(0.2, 0.4, 1.0), vec3(1.), clouds);
+    }
+
+	fragColor = vec4(col, 1.);
+}
+
+
+//        ----  simplex noise for clouds  ----
+
+float simplex(vec3 v);
+
+float fbm3(vec3 v) {
+    float result = simplex(v);
+    result += simplex(v * 2.) / 2.;
+    result += simplex(v * 4.) / 4.;
+    result /= (1. + 1./2. + 1./4.);
+    return result;
+}
+
+float fbm5(vec3 v) {
+    float result = simplex(v);
+    result += simplex(v * 2.) / 2.;
+    result += simplex(v * 4.) / 4.;
+    result += simplex(v * 8.) / 8.;
+    result += simplex(v * 16.) / 16.;
+    result /= (1. + 1./2. + 1./4. + 1./8. + 1./16.);
+    return result;
+}
+
+float cloudsNoise(vec3 v) {
+    v *= vec3(1., 5., 1.);
+    v += vec3(fbm3(v), fbm3(vec3(v.xy, v.z + 1000.)), fbm3(vec3(v.xy, v.z + 2000.)));
+    //  normalize
+    return pow(fbm5(v) / 2. + 0.5, 3.);
+}
+
+//
+// Description : Array and textureless GLSL 2D/3D/4D simplex
+//               noise functions.
+//      Author : Ian McEwan, Ashima Arts.
+//  Maintainer : ijm
+//     Lastmod : 20110822 (ijm)
+//     License : Copyright (C) 2011 Ashima Arts. All rights reserved.
+//               Distributed under the MIT License. See LICENSE file.
+//               https://github.com/ashima/webgl-noise
+//
+
+vec3 mod289(vec3 x) {
+  return x - floor(x * (1.0 / 289.0)) * 289.0;
+}
+
+vec4 mod289(vec4 x) {
+  return x - floor(x * (1.0 / 289.0)) * 289.0;
+}
+
+vec4 permute(vec4 x) {
+     return mod289(((x*34.0)+1.0)*x);
+}
+
+vec4 taylorInvSqrt(vec4 r)
+{
+  return 1.79284291400159 - 0.85373472095314 * r;
+}
+
+float simplex(vec3 v)
+  {
+  const vec2  C = vec2(1.0/6.0, 1.0/3.0) ;
+  const vec4  D = vec4(0.0, 0.5, 1.0, 2.0);
+
+// First corner
+  vec3 i  = floor(v + dot(v, C.yyy) );
+  vec3 x0 =   v - i + dot(i, C.xxx) ;
+
+// Other corners
+  vec3 g = step(x0.yzx, x0.xyz);
+  vec3 l = 1.0 - g;
+  vec3 i1 = min( g.xyz, l.zxy );
+  vec3 i2 = max( g.xyz, l.zxy );
+
+  //   x0 = x0 - 0.0 + 0.0 * C.xxx;
+  //   x1 = x0 - i1  + 1.0 * C.xxx;
+  //   x2 = x0 - i2  + 2.0 * C.xxx;
+  //   x3 = x0 - 1.0 + 3.0 * C.xxx;
+  vec3 x1 = x0 - i1 + C.xxx;
+  vec3 x2 = x0 - i2 + C.yyy; // 2.0*C.x = 1/3 = C.y
+  vec3 x3 = x0 - D.yyy;      // -1.0+3.0*C.x = -0.5 = -D.y
+
+// Permutations
+  i = mod289(i);
+  vec4 p = permute( permute( permute(
+             i.z + vec4(0.0, i1.z, i2.z, 1.0 ))
+           + i.y + vec4(0.0, i1.y, i2.y, 1.0 ))
+           + i.x + vec4(0.0, i1.x, i2.x, 1.0 ));
+
+// Gradients: 7x7 points over a square, mapped onto an octahedron.
+// The ring size 17*17 = 289 is close to a multiple of 49 (49*6 = 294)
+  float n_ = 0.142857142857; // 1.0/7.0
+  vec3  ns = n_ * D.wyz - D.xzx;
+
+  vec4 j = p - 49.0 * floor(p * ns.z * ns.z);  //  mod(p,7*7)
+
+  vec4 x_ = floor(j * ns.z);
+  vec4 y_ = floor(j - 7.0 * x_ );    // mod(j,N)
+
+  vec4 x = x_ *ns.x + ns.yyyy;
+  vec4 y = y_ *ns.x + ns.yyyy;
+  vec4 h = 1.0 - abs(x) - abs(y);
+
+  vec4 b0 = vec4( x.xy, y.xy );
+  vec4 b1 = vec4( x.zw, y.zw );
+
+  //vec4 s0 = vec4(lessThan(b0,0.0))*2.0 - 1.0;
+  //vec4 s1 = vec4(lessThan(b1,0.0))*2.0 - 1.0;
+  vec4 s0 = floor(b0)*2.0 + 1.0;
+  vec4 s1 = floor(b1)*2.0 + 1.0;
+  vec4 sh = -step(h, vec4(0.0));
+
+  vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy ;
+  vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww ;
+
+  vec3 p0 = vec3(a0.xy,h.x);
+  vec3 p1 = vec3(a0.zw,h.y);
+  vec3 p2 = vec3(a1.xy,h.z);
+  vec3 p3 = vec3(a1.zw,h.w);
+
+//Normalise gradients
+  vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2, p2), dot(p3,p3)));
+  p0 *= norm.x;
+  p1 *= norm.y;
+  p2 *= norm.z;
+  p3 *= norm.w;
+
+// Mix final noise value
+  vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+  m = m * m;
+  return 42.0 * dot( m*m, vec4( dot(p0,x0), dot(p1,x1),
+                                dot(p2,x2), dot(p3,x3) ) );
+  }
+
+void main() {
+	vec4 color;
+	mainImage(color, gl_FragCoord.xy);
+
+	color.w = 1.0;
+	gl_FragColor = color;
+}

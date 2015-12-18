@@ -1,0 +1,347 @@
+/*!
+ * <info>
+ * <author>snolot [ https://www.shadertoy.com/user/snolot ]</author>
+ * <name>sphere_eat_textured</name>
+ * 
+ * <description>
+ *   More than inspired by eddietree <br/>https://www.shadertoy.com/view/lt2SDD<br/><br/>Click
+ *   to see full sphere
+ * </description>
+ * 
+ * <url>https://www.shadertoy.com/view/llBXzy</url>
+ * 
+ * <date>2015-10-14</date>
+ * 
+ * <tags>raymarching, texture</tags>
+ * 
+ * <synthclipse-importer-legal-note>
+ *   As noted in: [ https://www.shadertoy.com/terms ]:
+ *   If the author did not stated otherwise, this shader is licensed under
+ *   Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License 
+ *   [ http://creativecommons.org/licenses/by-nc-sa/3.0/deed.en_US ].
+ * </synthclipse-importer-legal-note>
+ * </info>
+ */
+
+uniform vec3      iResolution;           // viewport resolution (in pixels)
+uniform float     iGlobalTime;           // shader playback time (in seconds)
+uniform float     iChannelTime[4];       // channel playback time (in seconds)
+uniform vec3      iChannelResolution[4]; // channel resolution (in pixels)
+uniform vec4      iMouse;                // mouse pixel coords. xy: current (if MLB down), zw: click
+uniform vec4      iDate;                 // (year, month, day, time in seconds)
+uniform float     iSampleRate;           // sound sample rate (i.e., 44100)
+uniform sampler2D iChannel2; //! texture["Shadertoy/res/tex01.jpg"]
+uniform sampler2D iChannel1; //! texture["Shadertoy/res/tex07.jpg"]
+uniform samplerCube iChannel0; //! texture["Shadertoy/res/cube03_0.png"]
+
+// More than inspired by eddietree 
+// https://www.shadertoy.com/view/lt2SDD
+
+#define SIZE 2.0
+const float MAX_TRACE_DISTANCE = 10.0;
+const float INTERSECTION_PRECISION = 0.001;
+const int NUM_OF_TRACE_STEPS = 64;
+const float eps = .01;
+
+float sdSphere(vec3 p, float radius) {
+    return length(p) - radius;
+}
+
+float sdTorus( vec3 p, vec2 t )
+{
+  vec2 q = vec2(length(p.xz)-t.x,p.y - 2.6);
+  return length(q)-t.y;
+}
+
+mat3 calcLookAtMatrix( in vec3 ro, in vec3 ta, in float roll )
+{
+    vec3 ww = normalize( ta - ro );
+    vec3 uu = normalize( cross(ww,vec3(sin(roll),cos(roll),0.0) ) );
+    vec3 vv = normalize( cross(uu,ww));
+    return mat3( uu, vv, ww );
+}
+
+void doCamera( out vec3 camPos, out vec3 camTar, in float time, in vec2 mouse ){
+    float radius 	= 6. ;//+ sin(time*.25)*1.6;
+    float theta 	= 0.3 + 5.0 * mouse.x - iGlobalTime*0.15;
+    float phi 		= .01 + 1.58 * 2.8 ;//.5 + sin(iGlobalTime*.05) *2.14159 ;//mouse.y - iGlobalTime*0.5;
+    
+    float pos_x = radius * cos(theta) * sin(phi);
+    float pos_z = radius * sin(theta) * sin(phi);
+    float pos_y = radius * cos(phi);
+    
+    camPos = vec3(pos_x*0.6, pos_y + 5.0, pos_z*0.6);
+    camTar = vec3(0.0,0.0,0.0);
+}
+
+float smin( float a, float b, float k ){
+    float res = exp( -k*a ) + exp( -k*b );
+    return -log( res )/k;
+}
+
+
+float opRep( vec3 p, vec3 c )
+{
+    vec3 q = mod(p,c)-0.5*c;
+    return sdSphere( q, .25 );
+}
+
+float opScale( vec3 p, float s )
+{
+    return sdSphere(p/s, s)*s;
+}
+
+float opS( float d1, float d2 ){
+    return max(-d1,d2);
+}
+
+float opU( float d1, float d2 ){
+    return min(d1,d2);
+}
+
+// checks to see which intersection is closer
+// and makes the y of the vec2 be the proper id
+vec2 opU( vec2 d1, vec2 d2 ){
+	return (d1.x<d2.x) ? d1 : d2; 
+}
+
+float opI( float d1, float d2 ){
+    return max(d1,d2);
+}
+
+// noise func
+float hash( float n ) { return fract(sin(n)*753.5453123); }
+float noise( in vec3 x )
+{
+    vec3 p = floor(x);
+    vec3 f = fract(x);
+    f = f*f*(3.0-2.0*f);
+	
+    float n = p.x + p.y*157.0 + 113.0*p.z;
+    return mix(mix(mix( hash(n+  0.0), hash(n+  1.0),f.x),
+                   mix( hash(n+157.0), hash(n+158.0),f.x),f.y),
+               mix(mix( hash(n+113.0), hash(n+114.0),f.x),
+                   mix( hash(n+270.0), hash(n+271.0),f.x),f.y),f.z);
+}
+
+vec2 doModel( vec3 pos ){  
+  	
+    vec3 cp = vec3( 2.0 );
+    //vec3 f = worley( pos - vec3(  0.0, 1.0,  0.0  ), cp );
+    
+    
+//    float sphere = sdDisplacementSphere( pos, noise(pos), cp, 0 );
+    float sphere = sdSphere(pos, 3.95  );
+    float t1 = sphere;
+
+    
+    
+    vec3 q;
+	vec3 c = vec3(1.2, .05, 1.2);
+	float time = 1.6;//iGlobalTime;
+    if(iMouse.w>.5){
+        t1 =   opS(sdTorus( pos, vec2(0.8, cos(cos(time*.75))* 3.14) )+noise(pos+pos * .02 + time*0.5), t1);
+        //t1 =   opS(sdTorus( pos, vec2(3.8, cos(iGlobalTime*.75)* 3.14) )+noise(pos+pos * .02 + iGlobalTime*0.5), t1);
+    }else{
+        t1 =   opS(sdTorus( pos, vec2(0.8, cos(cos(time*.75))* 3.14) )+noise(pos+pos * .02 + time*0.5), t1);
+    }
+       
+   	return vec2( t1, 1.0 );
+}
+
+float getGrey(vec3 p){ return p.x*0.299 + p.y*0.587 + p.z*0.114; }
+
+vec3 tex3D( sampler2D tex, in vec3 p, in vec3 n ){
+   
+    n = max((abs(n) - 0.2)*7., 0.001); // n = max(abs(n), 0.001), etc.
+    n /= (n.x + n.y + n.z );  
+    
+	return (texture2D(tex, p.yz)*n.x + texture2D(tex, p.zx)*n.y + texture2D(tex, p.xy)*n.z).xyz;
+}
+
+vec3 doBumpMap( sampler2D tex, in vec3 p, in vec3 nor, float bumpfactor){
+   
+    const float eps = 0.001;
+    vec3 grad = vec3( getGrey(tex3D(tex, vec3(p.x-eps, p.y, p.z), nor)),
+                      getGrey(tex3D(tex, vec3(p.x, p.y-eps, p.z), nor)),
+                      getGrey(tex3D(tex, vec3(p.x, p.y, p.z-eps), nor)));
+    
+    grad = (grad - getGrey(tex3D(tex,  p , nor)))/eps; 
+            
+    grad -= nor*dot(nor, grad);          
+                      
+    return normalize( nor + grad*bumpfactor );
+	
+}
+
+float shadow( in vec3 ro, in vec3 rd )
+{
+    const float k = 2.0;
+    
+    const int maxSteps = 10;
+    float t = 0.0;
+    float res = 1.0;
+    
+    for(int i = 0; i < maxSteps; ++i) {
+        
+        float d = doModel(ro + rd*t).x;
+            
+        if(d < INTERSECTION_PRECISION) {
+            
+            return 0.0;
+        }
+        
+        res = min( res, k*d/t );
+        t += d;
+    }
+    
+    return res;
+}
+
+
+float ambientOcclusion( in vec3 ro, in vec3 rd ){
+    
+    const int maxSteps = 7;
+    const float stepSize = 0.05;
+    
+    float t = 0.0;
+    float res = 0.0;
+    
+    // starting d
+    float d0 = doModel(ro).x;
+    
+    for(int i = 0; i < maxSteps; ++i) {
+        
+        float d = doModel(ro + rd*t).x;
+		float diff = max(d-d0, 0.0);
+        
+        res += diff;
+        
+        t += stepSize;
+    }
+    
+    return res;
+}
+
+vec3 calcNormal( in vec3 pos ){
+    
+	vec3 eps = vec3( 0.001, 0.0, 0.0 );
+	vec3 nor = vec3(
+	    doModel(pos+eps.xyy).x - doModel(pos-eps.xyy).x,
+	    doModel(pos+eps.yxy).x - doModel(pos-eps.yxy).x,
+	    doModel(pos+eps.yyx).x - doModel(pos-eps.yyx).x );
+	return normalize(nor);
+}
+
+void doShading( vec3 ro , vec3 rd, inout vec3 color, vec3 currPos ){
+	
+    vec3 lightDir 	= normalize(vec3(.0,0.,0.0));
+	vec3 normal 	= calcNormal( currPos );
+    vec3 normal_distorted = calcNormal( currPos +  noise(currPos*1.5 + vec3(0.0,0.0,sin(iGlobalTime*0.75))) );
+	float shadowVal = shadow( currPos - rd* 0.1, lightDir  );
+    float ao = ambientOcclusion( currPos - normal*0.01, normal );
+
+    float ndotl = abs(dot( -rd, normal ));
+    float ndotl_distorted = abs(dot( -rd, normal_distorted ));
+    float rim = pow(1.0-ndotl, 6.0);
+    float rim_distorted = pow(1.0-ndotl_distorted, 6.0);
+
+	color = textureCube (iChannel0, reflect( rd, normal ) ).xyz;
+	//
+
+    float distToCenter = length(currPos);
+    if ( abs(distToCenter - 4.0) < 0.08  )
+    {
+
+        vec4 pos = vec4( currPos*15.0, 1.0 );
+        color *= vec3(.7, .7, .7);
+        color = mix( color, vec3(0., 0., 0.), rim_distorted+0.05 ) * .75;
+        color += textureCube (iChannel0, refract( rd, normal_distorted, .75 ) ).xyz * rim*.5 + vec3(rim*.2);
+        vec3 bm = doBumpMap(iChannel1, currPos*.75, normal, .05);
+        vec3 objCol = tex3D( iChannel2, currPos*.25, bm );
+        color += objCol*.35;
+    }else if(currPos.y > 1.6){
+        color = mix( color, vec3(5., .4, .4), rim_distorted*0.5 );
+        //color += textureCube (iChannel0, refract( rd, normal_distorted, .75 ) ).xyz * rim + vec3(rim*.6);
+        color = mix( color, vec3(1., .7, .4), rim_distorted+0.025 );
+		color += vec3((tex3D(iChannel1, currPos, normal)*.5).x*.8, 0., 0.);
+        color += rim;
+    }
+    
+
+
+    color *= vec3(mix(0.9,1.0,shadowVal));
+	//	color *= vec3(mix(0.4,1.0,ao)); 
+    
+}
+
+vec3 rayPlaneIntersection( vec3 ro, vec3 rd, vec4 plane ){
+	float t = -( dot(ro, plane.xyz) + plane.w) / dot( rd, plane.xyz );
+	return ro + t * rd;
+}
+
+bool renderRayMarch(vec3 ro, vec3 rd, inout vec3 color ) {
+    const int maxSteps = NUM_OF_TRACE_STEPS;
+        
+    float t = 0.0;
+    float d = 0.0;
+    
+    for(int i = 0; i < maxSteps; ++i) {
+        vec3 currPos = ro + rd * t;
+        d = doModel(currPos).x;
+        if(d < INTERSECTION_PRECISION) {
+            break;
+        }        
+        t += d;
+    }
+    
+    if(d < INTERSECTION_PRECISION) {
+        vec3 currPos = ro + rd * t;
+        doShading( ro, rd, color, currPos );
+        
+        return true;
+    }
+    /*
+    vec3 planePoint = rayPlaneIntersection(ro, rd, vec4(0.0, -1.0, 0.0, 1.0));
+	float shadowFloor = shadow( planePoint, vec3(0.0,1.0,0.0));
+	color = color * mix( .9, 1.0, shadowFloor );// - length(ro)
+	color *= vec3(.3, .6, .4);
+    */
+    return false;
+}
+
+
+
+void mainImage( out vec4 fragColor, in vec2 fragCoord )
+{
+	vec2 p = (-iResolution.xy + 2.0*fragCoord.xy)/iResolution.y;
+    vec2 m = iMouse.xy/iResolution.xy;
+    
+    // camera movement
+    vec3 ro, ta;
+    doCamera( ro, ta, iGlobalTime, m );
+
+    // camera matrix
+    mat3 camMat = calcLookAtMatrix( ro, ta, 0.0 );  // 0.0 is the camera roll
+    
+	// create view ray
+	vec3 rd = normalize( camMat * vec3(p.xy,1.0) ); // 2.0 is the lens length
+    
+    // calc color
+    vec3 col = vec3(.75, .75, .75);
+    renderRayMarch( ro, rd, col );
+    
+    // vignette, OF COURSE
+    float vignette = 1.0-smoothstep(1.0,2.5, length(p));
+    col.xyz *= mix( 0.7, 1.0, vignette);
+        
+    fragColor = vec4( col , 1. );
+}
+
+void main() {
+	vec4 color;
+	mainImage(color, gl_FragCoord.xy);
+
+	color.w = 1.0;
+	gl_FragColor = color;
+}

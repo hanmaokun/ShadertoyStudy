@@ -1,0 +1,84 @@
+uniform vec3 iResolution;           // viewport resolution (in pixels)
+uniform float iGlobalTime;           // shader playback time (in seconds)
+uniform float iChannelTime[4];       // channel playback time (in seconds)
+uniform vec3 iChannelResolution[4]; // channel resolution (in pixels)
+uniform vec4 iMouse;                // mouse pixel coords. xy: current (if MLB down), zw: click
+uniform vec4 iDate;                 // (year, month, day, time in seconds)
+
+uniform float     pos_z;				//! slider[0, 0.8, 20]
+uniform float     pos_y;				//! slider[0, 0.8, 20]
+uniform float     pos_x;				//! slider[0, 0.8, 20]
+
+const int MAX_ITER = 16; // 100 is a safe number to use, it won't produce too many artifacts and still be quite fast
+const float MAX_DIST = 20.0; // Make sure you change this if you have objects farther than 20 units away from the camera
+const float EPSILON = 0.01; // At this distance we are close enough to the object that we have essentially hit it
+
+float sphere(vec3 pos, float radius)
+{
+    return length(pos) - radius;
+}
+
+float distfunc(vec3 pos)
+{
+    return sphere(pos, 1.0);
+}
+
+void raymarch(in vec3 cam_origin, in vec3 ray_dir, out vec4 final_color) {
+	float totalDist = 0.0;
+	vec3 pos = cam_origin;
+	float dist = EPSILON;
+
+	for (int i = 0; i < MAX_ITER; i++)
+	{
+	    // Either we've hit the object or hit nothing at all, either way we should break out of the loop
+	    if (dist < EPSILON || totalDist > MAX_DIST)
+	        break; // If you use windows and the shader isn't working properly, change this to continue;
+
+	    dist = distfunc(pos); // Evalulate the distance at the current point
+	    totalDist += dist;
+	    pos += dist * ray_dir; // Advance the point forwards in the ray direction by the distance
+	}
+
+	if (dist < EPSILON)
+	{
+		vec2 eps = vec2(0.0, EPSILON);
+		vec3 normal = normalize(vec3(
+		    distfunc(pos + eps.yxx) - distfunc(pos - eps.yxx),
+		    distfunc(pos + eps.xyx) - distfunc(pos - eps.xyx),
+		    distfunc(pos + eps.xxy) - distfunc(pos - eps.xxy)));
+		float diffuse = max(0.0, dot(-ray_dir, normal));
+		float specular = pow(diffuse, 32.0);
+		vec3 color = vec3(diffuse - 0.1 * specular);
+		final_color = vec4(color, 1.0);
+	}
+	else
+	{
+		final_color = vec4(0.0);
+	}
+}
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+	vec2 screenPos = -1.0 + 2.0 * fragCoord.xy / iResolution.xy; // screenPos can range from -1 to 1
+	screenPos.x *= iResolution.x/iResolution.y;
+
+	vec3 cameraOrigin = vec3(pos_x, pos_y, pos_z);
+	vec3 cameraTarget = vec3(0.0, 0.0, 0.0);
+
+	vec3 upDirection = vec3(0.0, 0.0, 1.0);
+
+	vec3 cameraDir = normalize(cameraTarget - cameraOrigin);
+	vec3 cameraRight = normalize(cross(upDirection, cameraOrigin));
+	vec3 cameraUp = cross(cameraDir, cameraRight);
+
+	vec3 rayDir = normalize(cameraRight * screenPos.x + cameraUp * screenPos.y + cameraDir);
+
+	raymarch(cameraOrigin, rayDir, fragColor);
+}
+
+void main() {
+	vec4 color;
+	mainImage(color, gl_FragCoord.xy);
+
+	color.w = 1.0;
+	gl_FragColor = color;
+}

@@ -1,0 +1,214 @@
+/*!
+ * <info>
+ * <author>guil [ https://www.shadertoy.com/user/guil ]</author>
+ * <name>Rocky coast</name>
+ *
+ * <description>
+ *   A rocky coast, summertime.<br/>In fact, a sum of sine wave.
+ * </description>
+ *
+ * <url>https://www.shadertoy.com/view/ltlGDX</url>
+ *
+ * <date>2015-03-09</date>
+ *
+ * <tags>3d, sea, rocks</tags>
+ *
+ * <synthclipse-importer-legal-note>
+ *   As noted in: [ https://www.shadertoy.com/terms ]:
+ *   If the author did not stated otherwise, this shader is licensed under
+ *   Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License
+ *   [ http://creativecommons.org/licenses/by-nc-sa/3.0/deed.en_US ].
+ * </synthclipse-importer-legal-note>
+ * </info>
+ */
+
+uniform vec3      iResolution;           // viewport resolution (in pixels)
+uniform float     iGlobalTime;           // shader playback time (in seconds)
+uniform float     iChannelTime[4];       // channel playback time (in seconds)
+uniform vec3      iChannelResolution[4]; // channel resolution (in pixels)
+uniform vec4      iMouse;                // mouse pixel coords. xy: current (if MLB down), zw: click
+uniform vec4      iDate;                 // (year, month, day, time in seconds)
+uniform float     iSampleRate;           // sound sample rate (i.e., 44100)
+
+uniform float ro_y; 					//! slider[1, 10.0, 100]
+uniform float scope; 					//! slider[0.0, 1.8, 60.0]
+
+// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.
+// Created by S.Guillitte
+
+
+
+float time=-iGlobalTime;
+float dh = 0.;
+
+
+mat2 m2 = mat2(0.8,  0.6, -0.6,  0.8);
+
+float noise(in vec2 p){
+
+    float res=0.;
+    float f=1.;
+	for( int i=0; i< 3; i++ )
+	{
+        p=m2*p*f+.6;
+        f*=1.2;
+        res+=sin(p.x+sin(2 * p.y));
+	}
+	return res/3;
+}
+
+
+float fbmabs( vec2 p ) {
+	p *= 0.5;
+	float f=1.;
+	float r = 0.0;
+    for(int i = 0;i<8;i++){
+		r += abs(noise( p*f ))/f;
+	    f *=2.;
+        p-=vec2(-.01,.04)*r;
+	}
+	return r;
+}
+
+float sea( vec2 p )
+{
+	float f = 1.;
+	float r = 0.0;
+    for(int i = 0; i<8; i++){
+		r += (1.-abs(noise( p*f +.2*time)))/f;
+	    f *=2.;
+        p-=vec2(-.01,.04)*r;
+	}
+	return r/4.+.5;
+}
+
+float island(in vec2 pos)
+{
+	float px = pow(abs(pos.x), 1.2);
+	float py = pow(abs(pos.y), 1.2);
+	float h =  1.0 - abs(pos.x) + sin((1.2 * px)) +
+			   1.0 - 1.2 * abs(pos.y) + 0.8* sin((1.2 * py));
+
+	return 0.3 + h * 0.08;
+}
+
+float rocks(vec2 p){
+	//return fbmabs(p)*.8+.5;
+    return island(p) + 0.02 * fbmabs(10*p);
+}
+
+float map( vec3 p)
+{
+	float d1 =p.y-island(scope*p.xz);
+    float d2 =p.y-.4*sea(scope*p.xz);
+    dh = d2-d1;
+    float d = min(d1,d2);
+	return d;
+
+}
+
+vec3 normalRocks(in vec2 p)
+{
+	const vec2 e = vec2(0.004, 0.0);
+	return normalize(vec3(
+		rocks(p + e.xy) - rocks(p - e.xy),
+        .05,//.008,
+		rocks(p + e.yx) - rocks(p - e.yx)
+		));
+}
+
+vec3 normalSea(in vec2 p)
+{
+	const vec2 e = vec2(0.002, 0.0);
+	return normalize(vec3(
+		sea(p + e.xy) - sea(p - e.xy),
+        .004,
+		sea(p + e.yx) - sea(p - e.yx)
+		));
+}
+
+vec3 sky(in vec2 p)
+{
+	return sin(vec3(1.7,1.5,1)+1. + .45*fbmabs(p*4.+.02*time));
+}
+
+float march(in vec3 ro, in vec3 rd)
+{
+	const float maxd = 30.0;
+	const float precis = 0.001;
+    float h = precis * 2.0;
+    float t = 0.0;
+	float res = -1.0;
+    for(int i = 0; i < 32; i++)
+    {
+        if(h < precis*t || t > maxd) break;
+	    h = map(ro + rd * t);
+        t += h;
+    }
+    if(t < maxd) res = t;
+    return res;
+}
+
+vec3 transform(in vec3 p)
+{
+
+    p.zx = p.xz;
+    p.z=-p.z;
+    return p;
+}
+
+void mainImage( out vec4 fragColor, in vec2 fragCoord )
+{
+	vec2 p = (2.0 * fragCoord.xy - iResolution.xy) / iResolution.y;
+	vec3 col = vec3(0.);
+    vec3 li = normalize(vec3(-2., 2., -4.));
+
+	vec3 up = vec3(0, 1, 0);
+	vec3 right = vec3(1, 0, 0);
+	vec3 front = vec3(0, 0, 1);
+
+	vec3 ro = right * p.x + front * p.y;
+	ro.y += ro_y;
+	vec3 rd = normalize(cross(right, front));
+
+
+    float t = march(ro, rd);
+    if(t > -0.001)
+    {
+        if(dh<0.)t-=dh;
+        vec3 pos = ro + t * rd;
+
+        float k=rocks(scope*pos.xz);
+        k += 0.38;
+
+        vec3 nor = normalRocks(scope*pos.xz);
+        float r = max(dot(nor, li), 0.9)/0.8;
+        if(dh < 0. && dh > -.01) r+=.5*exp(20. * dh);
+
+        vec3 col1 =vec3(r*k, r*k, r*0.43);
+        if(dh<0.01){
+        	vec3 nor = normalSea(scope*pos.xz);
+        	nor = reflect(rd, nor);
+        	col1 += pow(max(dot(li, nor), 0.0), 5.0)*vec3(.2);
+        	col1 +=0.5* sky(nor.yz);
+        }else if(k> 0.8) {
+        	col1 = mix(vec3(0.3, 0.8, 0.2), vec3(0.3, 0.88, 0.1), fbmabs(50 * pos.xz));
+        }
+	    col = .1+col1;
+
+	}
+    else //sky
+        col = sky(rd.xz*(rd.y+.2));
+
+    //col = pow(col, vec3(0.4545));
+
+   	fragColor = vec4(col, 1.0);
+}
+
+void main() {
+	vec4 color;
+	mainImage(color, gl_FragCoord.xy);
+
+	color.w = 1.0;
+	gl_FragColor = color;
+}
