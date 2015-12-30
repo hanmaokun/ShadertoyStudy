@@ -45,7 +45,7 @@ const float R = R_INNER * 1.04;
 
 // math const
 const float DEG_TO_RAD = pi / 180.0;
-const float MAX = 10000.0;
+const float MAX = 100.0;
 
 // scatter const
 const float K_R = 0.166;
@@ -279,7 +279,7 @@ vec3 render(vec3 ro, vec3 rd)
 			c = terrainColor( round( abs( hit.y + h - (1. - water))));
 		else
             c = waterColor( round(h/water));
-		vec3 sc = scatter(ro, rd);
+		vec3 sc = vec3(0.6);//scatter(ro, rd);
         
 		return (sc + 0.7) * c * length(sc);
 	}
