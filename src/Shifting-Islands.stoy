@@ -21,74 +21,112 @@
  * </synthclipse-importer-legal-note>
  * </info>
  */
-
 uniform vec3      iResolution;           // viewport resolution (in pixels)
 uniform float     iGlobalTime;           // shader playback time (in seconds)
-uniform float     iChannelTime[4];       // channel playback time (in seconds)
-uniform vec3      iChannelResolution[4]; // channel resolution (in pixels)
-uniform vec4      iMouse;                // mouse pixel coords. xy: current (if MLB down), zw: click
-uniform vec4      iDate;                 // (year, month, day, time in seconds)
-uniform float     iSampleRate;           // sound sample rate (i.e., 44100)
 
-#define CHANGE_SPEED 0.06				/* terrain changing speed */
-#define VIEW_SCOPE   2.0				/* view scope. */
+//#define INTEGRAL_DISTANCE_COMPUTE
+#define CHANGE_SPEED 0.1				/* terrain changing speed */
+#define VIEW_SCOPE   0.8				/* view scope. */
 
-vec3 mod289(vec3 x) {
-  return x - floor(x * (1.0 / 289.0)) * 289.0;
-}
+/*=======================proto function declarations===========================*/
+float map(vec3 p);
 
-vec4 mod289(vec4 x) {
-  return x - floor(x * (1.0 / 289.0)) * 289.0;
-}
-
-vec4 permute(vec4 x) {
-     return mod289(((x*34.0)+1.0)*x);
-}
-
-vec4 taylorInvSqrt(vec4 r)
+/*=======================shading utils===========================*/
+float sfract(float n){ return smoothstep(0.0,1.0,fract(n)); }
+float rand(vec3 n){ return fract(sin(dot(n,vec3(5.3357,-5.8464,5.7645)))*256.75+0.325); }
+float noise(vec3 n)
 {
-  return 1.79284291400159 - 0.85373472095314 * r;
+    float h1 = mix(rand(vec3(floor(n.x),floor(n.y),floor(n.z))),rand(vec3(ceil(n.x),floor(n.y),floor(n.z))),sfract(n.x));
+    float h2 = mix(rand(vec3(floor(n.x),ceil(n.y),floor(n.z))),rand(vec3(ceil(n.x),ceil(n.y),floor(n.z))),sfract(n.x));
+    float s1 = mix(h1,h2,sfract(n.y));
+
+    h1 = mix(rand(vec3(floor(n.x),floor(n.y),ceil(n.z))),rand(vec3(ceil(n.x),floor(n.y),ceil(n.z))),sfract(n.x));
+    h2 = mix(rand(vec3(floor(n.x),ceil(n.y),ceil(n.z))),rand(vec3(ceil(n.x),ceil(n.y),ceil(n.z))),sfract(n.x));
+    float s2 = mix(h1,h2,sfract(n.y));
+    return mix(s1,s2,sfract(n.z));
 }
 
+vec3 doMaterial( in vec3 pos, in vec3 nor )
+{
+    float tm = (noise(vec3(pos.xz/2.0,0.0)) + noise(vec3(pos.xz*4.0,0.0)))*0.25;
+    float th = (tm+noise(vec3(pos.xz,0.0))*0.25 + noise(vec3(pos.xz/2.0,0.0))*0.75);
+
+    float tn = noise(pos*64.0)*0.05 + noise(pos*32.0)*0.05 + noise(pos*16.0)*0.05 + 0.05;
+    return mix(vec3(0.035, tn, 0.025), vec3(tn), clamp(pow(th, 8.0)*0.2, 0.0, 1.0));
+}
+
+float calcSoftshadow( in vec3 ro, in vec3 rd )
+{
+    float res = 1.0;
+    float t = 0.5;                 		// selfintersection avoidance distance
+	float h = 1.0;
+    for( int i=0; i<4; i++ )         	// 40 is the max numnber of raymarching steps
+    {
+        h = map(ro + rd*t);
+        res = min( res, 64.0*h/t );   	// 64 is the hardness of the shadows
+		t += clamp( h, 0.02, 2.0 );   	// limit the max and min stepping distances
+    }
+    return clamp(res, 0.8, 1.0);
+}
+
+vec3 doLighting( in vec3 pos, in vec3 nor, in vec3 rd, in float dis, in vec3 mal )
+{
+    vec3 lin = vec3(0.0);
+
+    vec3  lig = normalize(vec3(1.0, 2.7, 0.09));
+    float dif = max(dot(nor, lig), 0.0);
+    float sha = 0.0; if( dif > 0.01 ) sha=calcSoftshadow( pos+0.01*nor, lig );
+
+    lin += dif * vec3(4.00, 4.00, 4.00) * sha;
+    lin += vec3(0.5);
+
+    vec3 col = mal * lin;
+
+	col = mix(vec3(0.9), col, 1.0 - clamp(dis * dis / 90.0, 0.0, 1.0));
+
+    return col;
+}
+
+/*=======================raymarching models===========================*/
+vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
+vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
 float snoise(vec3 v)
-  { 
+{
   const vec2  C = vec2(1.0/6.0, 1.0/3.0) ;
   const vec4  D = vec4(0.0, 0.5, 1.0, 2.0);
 
-// First corner
+  // First corner
   vec3 i  = floor(v + dot(v, C.yyy) );
   vec3 x0 =   v - i + dot(i, C.xxx) ;
 
-// Other corners
+  // Other corners
   vec3 g = step(x0.yzx, x0.xyz);
   vec3 l = 1.0 - g;
   vec3 i1 = min( g.xyz, l.zxy );
   vec3 i2 = max( g.xyz, l.zxy );
 
-  //   x0 = x0 - 0.0 + 0.0 * C.xxx;
-  //   x1 = x0 - i1  + 1.0 * C.xxx;
-  //   x2 = x0 - i2  + 2.0 * C.xxx;
-  //   x3 = x0 - 1.0 + 3.0 * C.xxx;
   vec3 x1 = x0 - i1 + C.xxx;
   vec3 x2 = x0 - i2 + C.yyy; // 2.0*C.x = 1/3 = C.y
   vec3 x3 = x0 - D.yyy;      // -1.0+3.0*C.x = -0.5 = -D.y
 
-// Permutations
+  // Permutations
   i = mod289(i); 
   vec4 p = permute( permute( permute( 
              i.z + vec4(0.0, i1.z, i2.z, 1.0 ))
            + i.y + vec4(0.0, i1.y, i2.y, 1.0 )) 
            + i.x + vec4(0.0, i1.x, i2.x, 1.0 ));
 
-// Gradients: 7x7 points over a square, mapped onto an octahedron.
-// The ring size 17*17 = 289 is close to a multiple of 49 (49*6 = 294)
+  // Gradients: 7x7 points over a square, mapped onto an octahedron.
+  // The ring size 17*17 = 289 is close to a multiple of 49 (49*6 = 294)
   float n_ = 0.142857142857; // 1.0/7.0
   vec3  ns = n_ * D.wyz - D.xzx;
 
-  vec4 j = p - 49.0 * floor(p * ns.z * ns.z);  //  mod(p,7*7)
+  vec4 j = p - 49.0 * floor(p * ns.z * ns.z);  	//  mod(p,7*7)
 
   vec4 x_ = floor(j * ns.z);
-  vec4 y_ = floor(j - 7.0 * x_ );    // mod(j,N)
+  vec4 y_ = floor(j - 7.0 * x_ );    			// mod(j,N)
 
   vec4 x = x_ *ns.x + ns.yyyy;
   vec4 y = y_ *ns.x + ns.yyyy;
@@ -97,8 +135,6 @@ float snoise(vec3 v)
   vec4 b0 = vec4( x.xy, y.xy );
   vec4 b1 = vec4( x.zw, y.zw );
 
-  //vec4 s0 = vec4(lessThan(b0,0.0))*2.0 - 1.0;
-  //vec4 s1 = vec4(lessThan(b1,0.0))*2.0 - 1.0;
   vec4 s0 = floor(b0)*2.0 + 1.0;
   vec4 s1 = floor(b1)*2.0 + 1.0;
   vec4 sh = -step(h, vec4(0.0));
@@ -111,46 +147,124 @@ float snoise(vec3 v)
   vec3 p2 = vec3(a1.xy,h.z);
   vec3 p3 = vec3(a1.zw,h.w);
 
-//Normalise gradients
+  //Normalise gradients
   vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2, p2), dot(p3,p3)));
   p0 *= norm.x;
   p1 *= norm.y;
   p2 *= norm.z;
   p3 *= norm.w;
 
-// Mix final noise value
+  //Mix final noise value
   vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
   m = m * m;
   return 42.0 * dot( m*m, vec4( dot(p0,x0), dot(p1,x1), 
                                 dot(p2,x2), dot(p3,x3) ) );
-  }
+}
 
+float map( vec3 p)
+{
+    vec3 drpz = vec3(p.xz * VIEW_SCOPE, iGlobalTime * CHANGE_SPEED);
+	float d = p.y - snoise(drpz);
+
+	return d;
+}
+
+float march(in vec3 ro, in vec3 rd)
+{
+	const float maxd = 7.0;
+	const float precis = 0.001;
+    float h = precis * 2.0;
+    float t = 0.0;
+	float res = -1.0;
+    for(int i = 0; i < 4; i++)
+    {
+        if(h < precis*t || t > maxd) break;
+	    h = map(ro + rd * t);
+        t += h;
+    }
+    if(t < maxd) res = t;
+    return res;
+}
+
+/*=================================================================*/
 void mainImage( out vec4 fragColor, in vec2 fragCoord )
 {
 	vec2 uv = fragCoord.xy / iResolution.xy;
-    vec3 drpz = vec3(uv * VIEW_SCOPE, iGlobalTime * CHANGE_SPEED);
-    float noise = snoise(drpz);
-    
-    vec3 color = vec3(0.2, 0.2, 0.2);
-	    if (noise > 0.85) {
-         	color = vec3(255, 255, 255);    // snow
-         	color *= noise;
-        } else if (noise > 0.7) {			
-         	color = vec3(171, 171, 171);   		// Mountain
-         	color *= noise;
-        } else if (noise > 0.4) {
-         	color = vec3(  45, 163, 18);			// Grass
-         	color *= 1.0 - noise/2;
-        } else if (noise > 0.35) {
-         	color = vec3  (285, 186, 58);			// Sand
-         	color *= 1.0 - noise;
-        } else {
-         	color = vec3(36, 112, 203);					// Sea
-         	color *= 1.0 - noise;
-        }
-	vec3 col = vec3(noise);
-	fragColor = vec4(col, 1.0);
-    //fragColor = vec4(color / 256.0, 1.0);
+	uv = 2*uv -1;
+	uv.x *= iResolution.x/iResolution.y;
+	vec3 cameraOrigin = vec3(uv.x*0.99, 1.0, uv.y*0.99);
+	vec3 cameraTarget = vec3(uv.x, 0.0, uv.y);
+	vec3 upDirection = vec3(0.0, 0.0, 1.0);
+	vec3 cameraDir = normalize(cameraTarget - cameraOrigin);
+	vec3 cameraRight = normalize(cross(upDirection, cameraOrigin));
+	vec3 cameraUp = cross(cameraDir, cameraRight);
+	vec3 rayDir = cameraDir;	//normalize(cameraRight * uv.x + cameraUp * uv.y + cameraDir);
+
+    float t = march(cameraOrigin, rayDir);
+
+	/* ==================shading==================*/
+    vec3 col = vec3(1.0);
+
+    if(t > -0.001)
+    {
+        vec3 pos = cameraOrigin + t * rayDir;
+        float height = pos.y;
+        float noise = mix(0.6, 1.0, height);
+        col = vec3(noise);
+
+		vec2 eps = vec2(0.0, 0.01);
+		vec3 normal = normalize(
+				vec3(
+					map(vec3(pos + eps.yxx)) - map(vec3(pos - eps.yxx)),
+					map(vec3(pos + eps.xyx)) - map(vec3(pos - eps.xyx)),
+					map(vec3(pos + eps.xxy)) - map(vec3(pos - eps.xxy))
+				)
+		);
+        vec3 mal = doMaterial( pos, normal );
+        col = doLighting( pos, normal, rayDir, t, mal );
+
+		float pwa = 0.81, pwb = 0.64;
+		float pwx = uv.x * uv.x, pwy = uv.y * uv.y;
+		//float distance = pwx/pwa + pwy/pwb;
+		float x1 = sqrt(pwa*pwb*pwx / (pwb*pwx + pwa*pwy));
+		float x2 = -x1;
+		float x0 = uv.x * x1 > 0 ? x1:x2;
+		float z0 = uv.y * x0 / uv.x;
+		vec2 uv_c = vec2(x0, z0);
+		if(distance(uv_c, uv) < 0.2) {
+#ifndef INTEGRAL_DISTANCE_COMPUTE
+			float y0 = snoise(vec3(uv_c * VIEW_SCOPE, iGlobalTime * CHANGE_SPEED));
+			float dist = distance(vec3(uv.x, height, uv.y),
+									vec3(x0, y0, z0));
+#else
+			// compute distance in an integral way.
+			float delta = (x0-uv.x)/10;
+			float x_step = uv.x;
+			vec3 last_p = vec3(uv.x, height, uv.y);
+			float dist = 0.0;
+			for(; abs(x0-x_step)>abs(delta/2); x_step += delta) {
+				float z_step = uv.y * x_step / uv.x;
+				vec2 uv_step = vec2(x_step, z_step);
+				float y_step = snoise(vec3(uv_step * VIEW_SCOPE, iGlobalTime * CHANGE_SPEED));
+				float dist_delta = distance(last_p, vec3(x_step, y_step, z_step));
+				dist += dist_delta;
+				last_p = vec3(x_step, y_step, z_step);
+			}
+#endif
+			float d_abs = abs(dist);
+			col = mix(vec3(0.2 - d_abs * 0.5), col, pow(smoothstep(0.0, 0.2, d_abs), 6));
+			float a = atan(z0, x0);
+			a = mod(a*39.1, 3.0);
+			if(a > 1.0) {
+				col = mix(vec3(1.0), col, smoothstep(0, 0.008, d_abs));
+			}
+			if(d_abs > 0.156) {
+				col = mix(vec3(1.0), col, smoothstep(0.156, 0.163, d_abs));
+			}
+		}
+    }
+
+    fragColor = vec4(col, 1.0);
 }
 
 void main() {

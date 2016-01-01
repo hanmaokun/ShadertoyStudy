@@ -27,6 +27,8 @@ uniform vec3      iResolution;           // viewport resolution (in pixels)
 uniform float     iGlobalTime;           // shader playback time (in seconds)
 uniform vec4      iMouse;                // mouse pixel coords. xy: current (if MLB down), zw: click
 uniform sampler2D iChannel1; //! texture["Shadertoy/res/tex07.jpg"]
+uniform sampler2D iChannel2; //! texture["Shadertoy/res/tex09.jpg"]
+uniform samplerCube iChannel0; //! texture["Shadertoy/res/cube04_0.png"]
 
 // More than inspired by eddietree 
 // https://www.shadertoy.com/view/lt2SDD
@@ -37,15 +39,16 @@ const float INTERSECTION_PRECISION = 0.001;
 const int NUM_OF_TRACE_STEPS = 64;
 const float eps = .01;
 
+float fbm( vec3 p );
+
 float sdPlane( vec3 p )
 {
   return p.y;
 }
 
 float sdSphere0(vec3 p, float radius) {
-	p.y *= 1.2;
-	//p.xz *= 1.1;
-    return length(p) - radius;
+	p.y *= 1.35;
+    return length(p) - radius + 0.26 * fbm(p);
 }
 
 float sdSphere(vec3 p, float radius) {
@@ -75,7 +78,7 @@ void doCamera( out vec3 camPos, out vec3 camTar, in float time, in vec2 mouse ){
     float pos_z = radius * sin(theta) * sin(phi);
     float pos_y = radius * cos(phi);
     
-    camPos = vec3(pos_x*0.7, pos_y + 5.0, pos_z*0.7);
+    camPos = vec3(pos_x*0.7, pos_y + 6.0, pos_z*0.7);
     camTar = vec3(0.0,0.0,0.0);
 }
 
@@ -177,7 +180,7 @@ vec2 doModel( vec3 pos ){
         t1 =   opS(sdTorus( pos, vec2(0.8, cos(cos(time*.75))* 3.14) )+noise(pos+pos * .02 + time*0.5), t1);
     }
 
-    t1 = opU(sdSphere0(pos-vec3(0.0, -1.2, 0.0), 4.1), t1);
+    t1 = opU(sdSphere0(pos-vec3(0.0, -0.8, 0.0), 4.0), t1);
        
    	return vec2( t1, 1.0 );
 }
@@ -266,9 +269,38 @@ vec3 calcNormal( in vec3 pos ){
 	return normalize(nor);
 }
 
+//============================sky start===========================
+// sky from iapafoto shader => https://www.shadertoy.com/view/Xtl3zM
+vec3 getSky(float offTime, vec3 size, sampler2D cloudTex, vec2 uv){
+    //stereo dir
+    float t = 3.+offTime*.08;
+    float ct = cos(t);
+    float st = sin(t);
+	float m = .55;
+    uv = (uv * 2. * m - m)*3.;
+    uv.x *= size.x/size.y;
+    uv *= mat2(ct,st,-st,ct);
+	vec3 rd = normalize(vec3(2.*uv.x, dot(uv,uv)-1., 2.*uv.y));
+	vec3 col = 2.5*vec3(0.18,0.33,0.45) - rd.y*1.5;
+    col *= 0.9;
+	vec2 cuv = rd.xz*(1000.0)/rd.y;
+    float cc = 1.;
+    float cc0 = texture2D( cloudTex, 0.00015*cuv +0.1+ 0.0043*offTime ).x;
+    float cc1 = 0.35*texture2D( cloudTex, 0.00015*2.0*cuv + 0.0043*.5*offTime ).x;
+    cc0 = 0.65*cc1 + cc0;
+    cc = smoothstep( 0.3, 1.0, cc0 );
+  	col = mix( col, vec3(0.95), 0.9*cc );
+    col = .35+.65*col;  // less background sky => higlight the Ball
+   	return col;
+}
+//============================sky end=============================
+
+//============================water waves start===========================
+
+//============================water waves end=============================
+
 //=========================cartoon-Planet start===========================
 const float water = .7;
-
 #define SEED 171.
 
 mat3 m = mat3( 0.00,  0.80,  0.60,
@@ -356,7 +388,12 @@ vec3 cartoonPlanet(in vec3 ro, in vec3 rd, in vec3 pos)
 	return (sc + 0.7) * c * length(sc);
 }
 //=========================cartoon-Planet end=============================
+const vec3 skyCol = vec3(0.3, 0.5, 0.8);
 
+vec3 sky(vec3 n)
+{
+	return skyCol * (1.0 - n.y * 0.8);
+}
 void doShading( vec3 ro , vec3 rd, inout vec3 color, vec3 currPos ){
 	
     vec3 lightDir 	= normalize(vec3(.0,0.,0.0));
@@ -370,7 +407,6 @@ void doShading( vec3 ro , vec3 rd, inout vec3 color, vec3 currPos ){
     float rim = pow(1.0-ndotl, 6.0);
     float rim_distorted = pow(1.0-ndotl_distorted, 6.0);
 
-	//color = textureCube (iChannel0, reflect( rd, normal ) ).xyz;
 	color = cartoonPlanet(ro, rd, currPos);
 	//float diffuse = max(0.0, dot(-rd, normal));
 	//float specular = pow(diffuse, 32.0);
@@ -378,29 +414,22 @@ void doShading( vec3 ro , vec3 rd, inout vec3 color, vec3 currPos ){
 
     float distToCenter = length(currPos);
     if ( abs(distToCenter - 4.0) < 0.08  ){
-        //vec4 pos = vec4( currPos*15.0, 1.0 );
-        //color *= vec3(.7, .7, .7);
-        //color = mix( color, vec3(0., 0., 0.), rim_distorted+0.05 ) * .75;
-        //color += textureCube (iChannel0, refract( rd, normal_distorted, .75 ) ).xyz * rim*.5 + vec3(rim*.2);
-        //vec3 bm = doBumpMap(iChannel1, currPos*.75, normal, .05);
-        //vec3 objCol = tex3D( iChannel2, currPos*.25, bm );
-        //color += objCol*.35;
     }else if(currPos.y > 1.8){
-    	if(distToCenter > 2.8) {
-			color = mix( vec3(1.0), vec3(5., .4, .4), rim_distorted*0.5 );
-			//color += textureCube (iChannel0, refract( rd, normal_distorted, .75 ) ).xyz * rim + vec3(rim*.6);
-			color = mix( color, vec3(1., .7, .4), rim_distorted+0.025 );
-			color += vec3((tex3D(iChannel1, currPos, normal)*.5).x*.8, 0., 0.);
-			color += rim;
+    	if(distToCenter > 2.9) {
+    		color = vec3(1.0);
     	}else {
-    		color = vec3(1.0, 1.0, 0.0);
+    		color = vec3(252, 208, 70)/252;
+    		float diffuse = max(0.0, dot(-rd, normal));
+    		float specular = pow(diffuse, 2.0);
+    	    color *= diffuse - 0.1 * specular;
+    		//color = vec3(0.6, 0.6, 0.);
     	}
     }else {
-    	color = vec3(0.8, 1.0, 1.0);
+    	/* water color */
+    	color = vec3(0, 159, 225)/255;
     }
     
     color *= vec3(mix(0.9,1.0,shadowVal));
-	//	color *= vec3(mix(0.4,1.0,ao)); 
 }
 
 vec3 rayPlaneIntersection( vec3 ro, vec3 rd, vec4 plane ){
@@ -429,12 +458,7 @@ bool renderRayMarch(vec3 ro, vec3 rd, inout vec3 color ) {
         
         return true;
     }
-    /*
-    vec3 planePoint = rayPlaneIntersection(ro, rd, vec4(0.0, -1.0, 0.0, 1.0));
-	float shadowFloor = shadow( planePoint, vec3(0.0,1.0,0.0));
-	color = color * mix( .9, 1.0, shadowFloor );// - length(ro)
-	color *= vec3(.3, .6, .4);
-    */
+
     return false;
 }
 
@@ -457,7 +481,10 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord )
     
     // calc color
     vec3 col = vec3(.75, .75, .75);
-    renderRayMarch( ro, rd, col );
+    if(!renderRayMarch( ro, rd, col )) {
+        vec3 sky = getSky(iGlobalTime, iResolution, iChannel2, gl_FragCoord.xy / iResolution.xy);
+    	col = sky;//mix(col, envt, 1.25);
+    }
     
     // vignette, OF COURSE
     float vignette = 1.0-smoothstep(1.0,2.5, length(p));
