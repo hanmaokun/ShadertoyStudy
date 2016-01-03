@@ -32,7 +32,7 @@ uniform vec4      iDate;                 // (year, month, day, time in seconds)
 uniform float     iSampleRate;           // sound sample rate (i.e., 44100)
 uniform sampler2D iChannel0; //! texture["Shadertoy/res/tex16.png"]
 
-uniform float     ro_y;		//! slider[1, 50, 120]
+uniform float     ro_y;		//! slider[1, 12, 120]
 
 // Racing Game by eiffie
 // License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.
