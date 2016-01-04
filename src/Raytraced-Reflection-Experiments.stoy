@@ -1,0 +1,581 @@
+/*!
+ * <info>
+ * <author>Orihaus [ https://www.shadertoy.com/user/Orihaus ]</author>
+ * <name>Raytraced Reflection Experiments</name>
+ * 
+ * <description>
+ *   Uses a few techniques I haven't seen on Shadertoy yet: stochastic (Glossy) secondary
+ *   rays, anti-aliased primary ray, planar area lighting. Also, quaternion-aligned
+ *   quads.
+ * </description>
+ * 
+ * <url>https://www.shadertoy.com/view/4sBXDD</url>
+ * 
+ * <date>2014-09-29</date>
+ * 
+ * <tags>raytracing</tags>
+ * 
+ * <synthclipse-importer-legal-note>
+ *   As noted in: [ https://www.shadertoy.com/terms ]:
+ *   If the author did not stated otherwise, this shader is licensed under
+ *   Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License 
+ *   [ http://creativecommons.org/licenses/by-nc-sa/3.0/deed.en_US ].
+ * </synthclipse-importer-legal-note>
+ * </info>
+ */
+
+uniform vec3      iResolution;           // viewport resolution (in pixels)
+uniform float     iGlobalTime;           // shader playback time (in seconds)
+uniform float     iChannelTime[4];       // channel playback time (in seconds)
+uniform vec3      iChannelResolution[4]; // channel resolution (in pixels)
+uniform vec4      iMouse;                // mouse pixel coords. xy: current (if MLB down), zw: click
+uniform vec4      iDate;                 // (year, month, day, time in seconds)
+uniform float     iSampleRate;           // sound sample rate (i.e., 44100)
+uniform samplerCube iChannel0; //! texture["Shadertoy/res/cube00_0.jpg"]
+
+#define saturate(i) ( clamp( i, 0.0, 1.0 ) )
+
+float time = iGlobalTime;
+vec3 resolution = iResolution;
+
+const float pi = 3.14159265;
+const float tau = pi * 2.0;
+const float halfpi = pi * 0.5;
+const float oneoverpi  = 1.0 / pi;
+const float oneovertau = 1.0 / tau;
+
+const float ZMAX = 99999.0;
+const float EPSILON = 0.001;
+float aspect = iResolution.y / iResolution.x;
+
+struct Intersection
+{
+	vec3 position;
+	float distance;
+	vec3 normal;
+    bool hit;
+    float luminance;
+    float emission;
+    float roughness;
+    vec2 uv;
+};
+	
+struct Light
+{
+    vec4 lightOrientation;
+    vec3 planarDirection;
+    vec3 planarRight;
+    vec3 planarUp;
+    vec3 lightExtents;
+    vec3 lightPosition;
+};
+    
+struct Ray
+{
+	vec3 origin;
+	vec3 direction;
+};
+	
+struct Plane
+{
+    vec2 extent;
+	vec3 center;
+    
+    vec4 orient;
+    
+    float luminance;
+    float emission;
+    float roughness;
+};
+     
+struct Sphere
+{
+	vec3 c;
+	float r;
+    float emission;
+    float roughness;
+};
+    
+//
+    
+Intersection MinIntersection( Intersection a, Intersection b )
+{
+	if( a.distance < b.distance )
+		return a;
+	else
+		return b;
+}
+
+Intersection RaySphere(Ray ray, Sphere sphere)
+{
+	Intersection i;
+	i.distance = ZMAX;
+	vec3 c = sphere.c;
+	float r = sphere.r;
+	vec3 e = c-ray.origin;
+	float a = dot(e, ray.direction);
+	float b = r*r - dot(e,e) + a*a;
+	if( b>0.0 )
+	{
+		float f = sqrt(b);
+		float t = a - f;
+		if(t > EPSILON)
+		{
+			i.position = ray.origin + ray.direction*t;
+			i.normal = normalize(i.position-c);
+			i.distance = t;
+            i.luminance = 1.0;
+            i.roughness = sphere.roughness;
+            i.emission = sphere.emission;
+            i.hit = true;
+            i.uv = i.normal.xy;
+		}
+	}
+	return i;
+}
+
+//
+
+struct Spatial
+{
+	vec4 pos, rot;
+};
+
+// Construct Quaternion from Euler Angles
+vec4 constructQuaternion( vec3 angles )
+{	
+    vec3 halfAngles = 0.5 * angles;
+    
+    float cos_z_2 = cos( halfAngles.z );
+    float cos_y_2 = cos( halfAngles.y );
+    float cos_x_2 = cos( halfAngles.x );
+
+    float sin_z_2 = sin( halfAngles.z );
+    float sin_y_2 = sin( halfAngles.y );
+    float sin_x_2 = sin( halfAngles.x );
+
+    // and now compute quaternion
+    vec4 quat;
+    quat.w = cos_z_2*cos_y_2*cos_x_2 + sin_z_2*sin_y_2*sin_x_2;
+    quat.x = cos_z_2*cos_y_2*sin_x_2 - sin_z_2*sin_y_2*cos_x_2;
+    quat.y = cos_z_2*sin_y_2*cos_x_2 + sin_z_2*cos_y_2*sin_x_2;
+    quat.z = sin_z_2*cos_y_2*cos_x_2 - cos_z_2*sin_y_2*sin_x_2;
+    return quat;
+}
+
+vec3 quaternionMultiply( vec4 quat, vec3 vector )
+{
+	vec3 uv, uuv;
+    vec3 qvec = quat.xyz;
+    
+    uv = cross( qvec, vector );
+    uuv = cross( qvec, uv );
+    
+	uv  *= ( 2.0 * quat.w );
+	uuv *= 2.0;
+
+	return normalize( vector + uv + uuv );
+}
+
+vec3 rotateVector( vec4 quat, vec3 vec )
+{
+	return vec + 2.0 * cross( cross( vec, quat.xyz ) + quat.w * vec, quat.xyz );
+}
+
+const vec3 left = vec3( 1, 0, 0 );
+const vec3 up = vec3( 0, 1, 0 );
+const vec3 forward = vec3( 0, 0, 1 );
+const vec4 quaternionIdentity = vec4( 0, 0, 0, 1 );
+
+vec3 linePlaneIntersect(in vec3 rayOrigin, in vec3 rayDirection, in vec3 planeCenter, in vec3 planeNormal )
+{
+	float distanceToPlane = dot( planeNormal, planeCenter - rayOrigin ) / dot( planeNormal, rayDirection );
+	return rayOrigin + rayDirection * distanceToPlane;
+}
+
+Intersection RayPlane( Ray ray, Plane p )
+{
+	Intersection i;
+    i.hit = false;
+	i.distance = ZMAX;
+   
+    vec3 axisX = quaternionMultiply( p.orient, left );
+    vec3 axisY = quaternionMultiply( p.orient, forward );
+    vec3 axisZ = quaternionMultiply( p.orient, up );
+    
+	// Intersect ray with plane
+    float distanceToPlane = dot( axisZ, p.center - ray.origin ) / dot( axisZ, ray.direction );
+    
+    if( distanceToPlane > EPSILON )
+    {
+        vec3 pointOnPlane = ray.origin + ray.direction * distanceToPlane;
+        vec3 toCenter = pointOnPlane - p.center;
+
+        float x_dot_c = dot( axisX, toCenter );
+        float y_dot_c = dot( axisY, toCenter );
+        float inExtentX = abs( x_dot_c );
+        float inExtentY = abs( y_dot_c );
+
+        vec2 extents = vec2( p.extent.x, p.extent.y );
+        if( inExtentY < extents.y && inExtentX < extents.x )
+        {
+            i.position = pointOnPlane;
+            i.normal = dot( axisZ, ray.direction ) <= 0.0 ? axisZ : -axisZ;
+            i.distance = distanceToPlane;
+            i.hit = true;
+
+            vec2 scaledPosition = vec2( 0.5 + x_dot_c * 0.5, 0.5 + y_dot_c * 0.5 ) / extents;
+            i.uv = scaledPosition.xy;	
+
+            vec2 uv = i.uv;
+            i.luminance = p.luminance;
+            i.emission  = p.emission;
+            i.roughness = p.roughness;
+        }
+    }
+    
+	return i;
+}
+
+int sideOfPlane(in vec3 p, in vec3 pc, in vec3 pn)
+{
+   if (dot(p-pc,pn)>=0.0) return 1; else return 0;
+}
+
+vec3 projectOnPlane( vec3 point, vec3 planeCenter, vec3 planeNorm ) 
+{
+    return point - dot( point - planeCenter, planeNorm ) * planeNorm;
+}
+
+vec3 closestPointOnRect( vec3 rect, vec3 extents, vec3 position, vec3 axisX, vec3 axisY, vec3 axisZ )
+{
+	vec3 proj = projectOnPlane( position, rect, axisZ );
+	vec3 dir = proj - rect;
+
+	vec2 diagonal = vec2( dot( dir, axisX ), dot( dir, axisY ) );
+	vec2 nearest2D = vec2( clamp( diagonal.x, -extents.x, extents.x ), clamp( diagonal.y, -extents.y, extents.y ) );
+    
+	vec3 nearestPointInside = rect + ( axisX * nearest2D.x + axisY * nearest2D.y );
+	return nearestPointInside;
+}
+
+Intersection projectRay( Ray ray )
+{
+    float sintime = sin( time );
+    
+    Intersection intersection;
+    
+	Plane pone;
+	pone.orient = quaternionIdentity;
+	pone.extent = vec2( 1, 1 );
+	pone.center = vec3( 0,-1, 0 );
+    pone.luminance = 0.9;
+    pone.emission = 0.0;
+    pone.roughness = 0.0125;
+	intersection = RayPlane( ray, pone );
+    
+	Plane ptwo;
+	ptwo.orient = constructQuaternion( ( vec3( 1.0, 0.0, sintime ) ) * halfpi );
+	ptwo.extent = vec2( 1.0, 1.0 );
+	ptwo.center = vec3( 0, -0.5, 2 );
+    ptwo.luminance = 0.9;
+    ptwo.emission = 0.6;
+    ptwo.roughness = 0.01;
+	intersection = MinIntersection( RayPlane( ray, ptwo ), intersection );
+    
+	Plane pthree;
+	pthree.orient = constructQuaternion( ( vec3( sintime, 0.0, 1.0 ) ) * halfpi );
+	pthree.extent = vec2( 0.125, 1.0 );
+	pthree.center = vec3( 1.0, 0.5 * ( sintime - 0.5 ), 0.0 );
+    pthree.emission = 0.875;
+    pthree.luminance = 0.9;
+    pthree.roughness = 0.01;
+	intersection = MinIntersection( RayPlane( ray, pthree ), intersection );
+    
+    Sphere sphere;
+    sphere.r = 0.5;
+    sphere.c = vec3( 0.0, 0.25 * sintime - 0.25, 0.5 );
+    sphere.emission = 0.0;
+    sphere.roughness = 0.25 + sin( time * 0.6 ) * 0.125;
+    intersection = MinIntersection( RaySphere( ray, sphere ), intersection );
+    
+    Sphere spheretwo;
+    spheretwo.r = 0.25;
+    spheretwo.c = vec3( cos( time ) * 0.7, 0.25 * sintime - 0.25, 0.5 - sintime * 0.7 );
+    spheretwo.emission = 0.5;
+    spheretwo.roughness = 0.05;
+    intersection = MinIntersection( RaySphere( ray, spheretwo ), intersection );
+    
+    return intersection;
+}
+
+//
+
+vec2 Hash22(vec2 p)
+{
+	p  = fract(p * vec2(5.3983, 5.4427));
+    p += dot(p.yx, p.xy +  vec2(21.5351, 14.3137));
+	return fract(vec2(p.x * p.y * 395.4337, p.x * p.y * 397.597));
+}
+
+float random(vec3 scale, float seed, vec2 fragCoord) 
+{
+	return fract(sin(dot(vec3(fragCoord,0.) + seed, scale)) * 43758.5453 + seed);
+}
+
+float random(vec2 co)
+{
+    return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453 + time);
+}
+
+// code from : http://www.rorydriscoll.com/2009/01/07/better-sampling/
+
+vec3 cosineWeightedDirection( float seed, vec3 normal, vec2 fragCoord ) 
+{
+    vec2 uv = Hash22( vec2( time, seed ) + fragCoord.xy );
+
+    float u = uv.x; float v = uv.y;
+    float r = sqrt(u);
+    float angle = 6.283185307179586 * v;
+    // compute basis from normal
+    vec3 sdir, tdir;
+    if (abs(normal.x)<.5) 
+    {
+        sdir = cross(normal, vec3(1,0,0));
+    } 
+    else 
+    {
+        sdir = cross(normal, vec3(0,1,0));
+    }
+    tdir = cross(normal, sdir);
+    
+    return r*cos(angle)*sdir + r*sin(angle)*tdir + sqrt(1.-u)*normal;
+}
+
+vec3 UniformSampleHemisphere( float x, float y )
+{
+	float SinTheta = ( y );
+    SinTheta *= SinTheta;
+
+	vec3 H;
+	H.x = SinTheta * cos( x );
+	H.y = 0.0;
+	H.z = SinTheta * sin( x );
+
+	return H;
+}
+
+//
+
+float distributionBeckmann( float roughness, float n_dot_h )
+{
+	float m = roughness * roughness;
+	float m2 = m * m;
+	float NoH2 = n_dot_h * n_dot_h;
+	return exp( (NoH2 - 1.0) / (m2 * NoH2) ) / ( pi * m2 * NoH2 * NoH2 );
+}
+
+float distributionGGX( float roughness, float n_dot_h )
+{
+	float m = roughness * roughness;
+	float m2 = m * m;
+	float d = ( n_dot_h * m2 - n_dot_h ) * n_dot_h + 1.0;
+	return m2 / ( pi*d*d );
+}
+
+// From : https://www.unrealengine.com/blog/physically-based-shading-on-mobile
+
+float EnvBRDFApproxNonmetal( float Roughness, float NoV )
+{
+    const vec2 c0 = vec2( -1.0, -0.0275 );
+    const vec2 c1 = vec2(  1.0,  0.0425 );
+    vec2 r = Roughness * c0 + c1;
+    return min( r.x * r.x, exp2( -9.28 * NoV ) ) * r.x + r.y;
+}
+
+//
+
+void mainImage( out vec4 fragColor, in vec2 fragCoord )
+{
+	float finalval = 0.0;
+    vec3 finalColor = vec3( finalval );
+    
+    vec2 mouse = 3.125 - ( iMouse.xy / resolution.xy ) * 5.0;
+    
+	vec2 pos = -1.0 + 2.0 * ( fragCoord.xy / resolution.xy );
+	pos.y *= aspect;
+    
+  	vec3 view = vec3( pos.x, pos.y, 1.0 );
+    vec4 viewOrientation = constructQuaternion( vec3( 0.0, -sin( mouse.x ), 0.0 ) * halfpi );
+    
+    vec3 viewVector = quaternionMultiply( viewOrientation, view );
+	vec3 rayDir = normalize( view );
+    
+	Ray ray;
+	ray.origin = vec3( sin( mouse.x ) * 2.0 , -0.5, cos( mouse.x ) * 2.0 );
+	ray.direction = rayDir;
+    
+    //
+    
+    float roughness = 0.0;
+    float enviroment = 0.0;
+    float occlusion = 1.0;
+    
+    vec3 lightPosition = vec3( 0.0, 0.0, 0.0 );
+    float nearestPoint = 1000.0;
+    float lightEmission = 0.0;
+    bool everhit = false;
+    
+    const int reflectraycount = 20;
+    const float reflectraycountoverone = 1.0 / float( reflectraycount );
+    
+    const int shadowraycount = 50;
+    const float shadowraycountoverone = 1.0 / float( shadowraycount );
+    
+    Intersection intersect;
+    vec3 normal = vec3( 0.0 );
+    vec3 position = vec3( 0.0 );
+    float hitcount = 0.0;
+    float luminance = 0.0;
+    vec3 viewDirection    = -rayDir;
+    
+    //
+    
+    Light light;
+    light.lightOrientation = constructQuaternion( vec3( sin( time ), 0.0, 1.0 ) * halfpi );
+    light.planarDirection  = quaternionMultiply( light.lightOrientation, up );
+    light.planarRight      = quaternionMultiply( light.lightOrientation, -left );
+    light.planarUp         = normalize( cross( light.planarRight, light.planarDirection ) );
+    light.lightExtents     = vec3( 0.125, 0.5, 1.0 );
+    light.lightPosition    = vec3( 1.0, 0.5 * ( sin( time ) - 0.5 ), 0.0 );
+    
+    float emission = 0.0;
+    
+    const int aasamples = 2;
+    const float faaSamples = float( aasamples * aasamples * 2 * 2 );
+    const float aaraycountoverone = 1.0 / float( faaSamples );
+    
+   	vec3 aaoffset = vec3( fwidth( pos ) * 0.25, 1.0 );
+    for( int x = -aasamples; x < aasamples; x++ )
+    {
+    	for( int y = -aasamples; y < aasamples; y++ )
+        {
+            ray.direction = normalize( viewVector + vec3( x, y, 0.0 ) * aaoffset );
+            intersect = projectRay( ray );
+
+            emission += intersect.emission;
+            luminance += intersect.luminance;
+            normal += intersect.normal;
+            position += intersect.position;
+            roughness += intersect.roughness;
+            hitcount += intersect.hit ? 1.0 : 0.0;
+
+            if( hitcount > 10.0 )
+                continue;
+        }
+    }
+    
+    float oneoverhitcount = 1.0 / hitcount;
+    normal    *= oneoverhitcount; position  *= oneoverhitcount;
+    emission  *= aaraycountoverone; luminance *= aaraycountoverone;
+    roughness *= aaraycountoverone;
+    
+    Intersection reflectIntersect;
+    
+    everhit = hitcount > 1.0;
+    if( everhit )
+    {
+        vec3 incident = normalize( position - ray.origin );
+        vec3 incidentReflection = reflect( incident, normal );
+        Ray reflectionRay;
+
+        // Reflections
+        
+        float sample_ = 0.0;
+        for( int i = 0; i < reflectraycount; i++ )
+        {
+            float indexOverOne = float( i ) / float( reflectraycount );
+            vec3 noiseOffset = cosineWeightedDirection( indexOverOne, normal, fragCoord );
+                
+            reflectionRay.direction = normalize( incidentReflection + noiseOffset * roughness );
+            reflectionRay.origin    = position + reflectionRay.direction * EPSILON;
+            reflectIntersect = projectRay( reflectionRay );
+
+            sample_ = reflectIntersect.hit ? reflectIntersect.emission :
+            	pow( textureCube( iChannel0, reflectionRay.direction ).r, 2.2 );
+            
+            enviroment += sample_ * reflectraycountoverone;
+            
+            if( enviroment > 0.99 )
+                continue;
+        }
+        
+        vec3 lightPoint = closestPointOnRect( light.lightPosition, light.lightExtents, 
+        	intersect.position, light.planarRight, light.planarUp, light.planarDirection );
+        
+        vec3 lightDirection = lightPoint - position;
+        
+        // From : http://www.gamedev.net/topic/552315-glsl-area-light-implementation/
+        
+        float roughness2 = roughness * roughness;
+        
+        float distanceToLight = length( lightDirection );
+        float distanceToLightRCP = 1.0 / distanceToLight;
+        float distanceSquared = distanceToLight * distanceToLight;
+        
+        float falloffExp = 0.5;
+        float falloff = 1.0 / ( distanceSquared + 1.0 );
+        float invfalloff = ( distanceSquared * falloffExp * falloffExp );
+        invfalloff = saturate( 1.0 - ( invfalloff * invfalloff ) );
+        invfalloff *= invfalloff;
+        falloff *= invfalloff;
+        
+        //
+        
+        vec3 reflectedLightPoint = linePlaneIntersect( position, incidentReflection, 
+                                                       light.lightPosition, light.planarDirection );
+        vec3 reflectedLightDirection = ( reflectedLightPoint - lightPosition );
+        
+        float specularAngle = saturate( dot( incidentReflection, light.planarDirection ) );
+        vec3 dirSpec2D = vec3( dot( reflectedLightDirection, light.planarRight ), 
+                               dot( reflectedLightDirection, light.planarDirection ),
+                               dot( reflectedLightDirection, light.planarUp  ) 
+                             );
+        
+        vec3 nearestSpec2D = vec3( clamp( dirSpec2D.x, -light.lightExtents.x, light.lightExtents.x ),
+                                   clamp( dirSpec2D.y, -light.lightExtents.y, light.lightExtents.y ), 
+                                   clamp( dirSpec2D.z, -light.lightExtents.z, light.lightExtents.z ) );
+        float specFactor = 1.0 - saturate( length( dirSpec2D - nearestSpec2D ) * 0.1 );
+        
+        vec3 halfVector = normalize( viewDirection + reflectedLightDirection );
+        
+        // Lighting
+        
+        falloff *= saturate( dot( light.planarDirection, -lightDirection ) );
+        
+        bool cansee = sideOfPlane( position, lightPosition, light.planarDirection ) == 1;
+        float n_dot_l = saturate( dot( lightDirection, normal ) );
+        float n_dot_v = saturate( dot( viewDirection, normal ) );
+        float h_dot_n = saturate( dot( halfVector, normal ) );
+
+        float approxEnv = EnvBRDFApproxNonmetal( roughness, n_dot_v );
+        float distribution = saturate( distributionGGX( roughness, specFactor ) ) ;
+        
+        float BRDF = falloff * n_dot_l * ( 0.2 + approxEnv * distribution );
+        
+        finalColor += emission + ( luminance * enviroment * approxEnv ) + BRDF;
+    }
+
+    //
+
+    finalColor = vec3( pow( finalColor, vec3( 1.0 / 2.2 ) ) );
+	fragColor = vec4( finalColor, 1.0 );
+}
+
+void main() {
+	vec4 color;
+	mainImage(color, gl_FragCoord.xy);
+
+	color.w = 1.0;
+	gl_FragColor = color;
+}
