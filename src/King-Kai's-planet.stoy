@@ -1,33 +1,43 @@
 /*!
  * <info>
- * <author>Malhar [ https://www.shadertoy.com/user/Malhar ]</author>
- * <name>Shifting Islands</name>
- *
+ * <author>hanmaokun [ https://www.shadertoy.com/user/hanmaokun ]</author>
+ * <name>King Kai's planet</name>
+ * 
  * <description>
- *   Islands appearing and disappearing
+ *   eiffie's <a href="https://www.shadertoy.com/view/XtsGRH" class="regular" target="_blank">car</a>
+ *   running on Xor's mountains, though believe it or not, I want to make a <a href="http://dragonball.wikia.com/wiki/King_Kai%27s_planet"
+ *   class="regular" target="_blank">King Kai's planet</a> originally.. <img src="/img/emoticonLaugh.png"/>
+ *   
  * </description>
- *
- * <url>https://www.shadertoy.com/view/MsBSDW</url>
- *
- * <date>2014-09-30</date>
- *
- * <tags>procedural, 2d</tags>
- *
+ * 
+ * <url>https://www.shadertoy.com/view/XsdGDS</url>
+ * 
+ * <date>2016-01-05</date>
+ * 
+ * <tags>raymarch, car</tags>
+ * 
  * <synthclipse-importer-legal-note>
  *   As noted in: [ https://www.shadertoy.com/terms ]:
  *   If the author did not stated otherwise, this shader is licensed under
- *   Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License
+ *   Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License 
  *   [ http://creativecommons.org/licenses/by-nc-sa/3.0/deed.en_US ].
  * </synthclipse-importer-legal-note>
  * </info>
  */
+
 uniform vec3      iResolution;           // viewport resolution (in pixels)
 uniform float     iGlobalTime;           // shader playback time (in seconds)
+uniform float     iChannelTime[4];       // channel playback time (in seconds)
+uniform vec3      iChannelResolution[4]; // channel resolution (in pixels)
+uniform vec4      iMouse;                // mouse pixel coords. xy: current (if MLB down), zw: click
+uniform vec4      iDate;                 // (year, month, day, time in seconds)
+uniform float     iSampleRate;           // sound sample rate (i.e., 44100)
+
 
 #define CHANGE_SPEED 0.1				/* terrain changing speed */
 #define VIEW_SCOPE   0.13				/* view scope. */
-#define TRACK_WIDTH  12
-#define TRACK_HEIGHT 9
+#define TRACK_WIDTH  12.
+#define TRACK_HEIGHT 9.
 
 /*=======================global variables========================*/
 vec2 uv;
@@ -130,7 +140,7 @@ float car_map(in vec3 p0){
 	p0 = rotationMatrix(axis, rot_ang) * p0;
 
 	/* rotation in 'x-z' plane, to align car with the track direction. */
-	p0 = rotationMatrix(vec3(0.0, 1.0, 0.0), -cur_car_dir_ang_xz + 3.14/2) * p0;
+	p0 = rotationMatrix(vec3(0.0, 1.0, 0.0), -cur_car_dir_ang_xz + 3.14/2.) * p0;
 
 	/* car model, from eiffie's https://www.shadertoy.com/view/XtsGRH */
 	vec3 p=p0;
@@ -166,14 +176,13 @@ float car_map(in vec3 p0){
 	return min(d,min(d1,d2));
 }
 
-
 vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
 vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
 vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
 vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
 float snoise(vec3 v)
 {
-  v.z = 0;	//comment out this line to see a shifting terrain.
+  v.z = 0.;	//comment out this line to see a shifting terrain.
   const vec2  C = vec2(1.0/6.0, 1.0/3.0) ;
   const vec4  D = vec4(0.0, 0.5, 1.0, 2.0);
 
@@ -279,16 +288,16 @@ void setConfig(){
 	mrmx=mat2(cos(a),sin(a),-sin(a),cos(a));
 
 	// car position and rotation params calculation
-	float ang = mod(iGlobalTime/3, 6.28) - 3.14;
-	float car_pos_x = (TRACK_WIDTH * TRACK_HEIGHT)/sqrt((pow(TRACK_HEIGHT, 2) + pow(TRACK_WIDTH, 2)*tan(ang)*tan(ang)));
-	if((ang > 3.14/2) || (ang < -3.14/2)) {
+	float ang = mod(iGlobalTime/2., 6.28) - 3.14;
+	float car_pos_x = (TRACK_WIDTH * TRACK_HEIGHT)/sqrt((pow(TRACK_HEIGHT, 2.) + pow(TRACK_WIDTH, 2.)*tan(ang)*tan(ang)));
+	if((ang > 3.14/2.) || (ang < -3.14/2.)) {
 		car_pos_x *= -1.0;
 	}
 	float car_pos_z = car_pos_x * tan(ang);
     vec3 pos = vec3(vec2(car_pos_x, car_pos_z) * VIEW_SCOPE, iGlobalTime * CHANGE_SPEED);
 	float car_pos_y = snoise(pos);
 	carPos = vec3(car_pos_x, car_pos_y, car_pos_z);
-	cur_car_dir_ang_xz = atan(-pow(TRACK_HEIGHT, 2) * car_pos_x, pow(TRACK_WIDTH, 2) * car_pos_z);
+	cur_car_dir_ang_xz = atan(-pow(TRACK_HEIGHT, 2.) * car_pos_x, pow(TRACK_WIDTH, 2.) * car_pos_z);
 	vec2 eps = vec2(0.0, 0.001);
 	terrain_normal = normalize(
 			vec3(
@@ -301,7 +310,7 @@ void setConfig(){
 
 void initWorldCoords(in vec2 fragCoord) {
     uv = fragCoord.xy / iResolution.xy;
-	uv = 2*uv - 1;
+	uv = 2. * uv - 1.;
 	uv.x *= iResolution.x/iResolution.y;
     cameraOrigin = vec3(0.0, 4, -12);
 	vec3 cameraTarget = vec3(0, 0.0, 0);
@@ -333,7 +342,7 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord )
         float noise = mix(0.6, 1.0, pos.y);
         col = vec3(noise);
 
-		if(dh_car < 0) {
+		if(dh_car < 0.) {
 			/* shade car. */
 	    	vec3 L=normalize(vec3(0.5,0.5,-0.5));
 			vec3 p = pos;
@@ -357,22 +366,22 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord )
 			col = doLighting( pos, normal, rayDir, t, mal );
 
 			/* draw race track */
-			float pwa = pow(TRACK_WIDTH, 2), pwb = pow(TRACK_HEIGHT, 2);
+			float pwa = pow(TRACK_WIDTH, 2.), pwb = pow(TRACK_HEIGHT, 2.);
 			float pwx = pos.x * pos.x, pwy = pos.z * pos.z;
 			float x1 = sqrt(pwa*pwb*pwx / (pwb*pwx + pwa*pwy));
 			float x2 = -x1;
-			float x0 = pos.x * x1 > 0 ? x1:x2;
+			float x0 = pos.x * x1 > 0. ? x1:x2;
 			float z0 = pos.z * x0 / pos.x;
 			vec2 uv_c = vec2(x0, z0);
 			if(distance(uv_c, vec2(pos.x, pos.z)) < 2.2) {
 				float y0 = snoise(vec3(uv_c * VIEW_SCOPE, iGlobalTime * CHANGE_SPEED));
 				float dist = distance(pos, vec3(x0, y0, z0));
 				float d_abs = abs(dist);
-				col = mix(vec3(0.3 - d_abs/4), col, pow(smoothstep(0.0, 1.5, d_abs), 5));
+				col = mix(vec3(0.3 - d_abs/4.), col, pow(smoothstep(0.0, 1.5, d_abs), 5.));
 				float a = atan(z0, x0);
 				a = mod(a*39.1, 3.0);
 				if(a > 1.8) {
-					col = mix(vec3(1.0), col, smoothstep(0, 0.02, d_abs));
+					col = mix(vec3(1.0), col, smoothstep(0., 0.02, d_abs));
 				}
 				if(d_abs > 1.1) {
 					col = mix(vec3(1.0), col, smoothstep(1.1, 1.13, d_abs));
@@ -383,6 +392,7 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord )
 
     fragColor = vec4(col, 1.0);
 }
+
 
 void main() {
 	vec4 color;
